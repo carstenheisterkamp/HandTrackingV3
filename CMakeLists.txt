@@ -3,17 +3,28 @@ project(HandTrackingService LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 
-# DepthAI v3 via FetchContent
-include(FetchContent)
-FetchContent_Declare(
-        depthai
-        GIT_REPOSITORY https://github.com/luxonis/depthai-core.git
-        GIT_TAG v3.2.1
-)
-set(DEPTHAI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(depthai)
-
+# OpenCV Suche
 find_package(OpenCV REQUIRED)
 
+find_path(DEPTHAI_INCLUDE_DIR NAMES depthai/depthai.hpp PATHS /usr/local/include)
+find_library(DEPTHAI_LIBRARY NAMES libdepthai-core.a PATHS /usr/local/lib)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBLO REQUIRED liblo)
+
 add_executable(HandTrackingService main.cpp)
-target_link_libraries(HandTrackingService PRIVATE depthai::core ${OpenCV_LIBS})
+
+if(DEPTHAI_INCLUDE_DIR AND DEPTHAI_LIBRARY)
+    target_include_directories(HandTrackingService PRIVATE ${DEPTHAI_INCLUDE_DIR})
+
+    target_link_libraries(HandTrackingService PRIVATE
+            ${DEPTHAI_LIBRARY}
+            ${OpenCV_LIBS}
+            ${LIBLO_LIBRARIES}
+            pthread
+            dl
+    )
+    message(STATUS "DepthAI Header: ${DEPTHAI_INCLUDE_DIR}")
+    message(STATUS "DepthAI Static Lib: ${DEPTHAI_LIBRARY}")
+else()
+    message(FATAL_ERROR "Konnte libdepthai-core.a nicht finden.")
+endif()
