@@ -65,11 +65,22 @@
 
 ## 3. Software Architecture
 
-*   **OS:** Linux (Jetson JetPack), macOS (Remote Dev).
-*   **Network:** Tailscale VPN (Target: MacBook).
-*   **Sensor:** Luxonis OAK-D Pro PoE (Ethernet).
-*   **Compute:** NVIDIA Jetson Orin Nano (8GB RAM).
 ## 2. Hardware & Environment
+
+*   **Compute:** NVIDIA Jetson Orin Nano (8GB RAM).
+*   **Sensor:** Luxonis OAK-D Pro PoE (Ethernet).
+*   **Network:** Tailscale VPN (Target: MacBook).
+*   **OS:** Linux (Jetson JetPack), macOS (Remote Dev).
+
+### 2.1 Models
+The service uses the following pre-compiled blobs for the Myriad X VPU:
+*   **Hand Landmarks:** `models/hand_landmark_full_sh4.blob`
+    *   *Source:* MediaPipe Hand Landmark (Full), compiled with 4 Shaves.
+    *   *Input:* 224x224 RGB.
+    *   *Output:* 63 floats (21 landmarks x 3 coords).
+*   **Palm Detection (Optional/Planned):** `models/palm_detection_sh4.blob`
+    *   *Source:* MediaPipe Palm Detection.
+    *   *Input:* 128x128 RGB.
 
 This service implements a high-performance, low-latency hand tracking pipeline on the NVIDIA Jetson Orin Nano using the Luxonis OAK-D Pro PoE camera. It leverages the DepthAI v3 API for data-centric processing and outputs tracking data via OSC (Open Sound Control) over a Tailscale VPN.
 ## 1. System Overview

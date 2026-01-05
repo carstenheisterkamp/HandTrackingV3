@@ -133,10 +133,110 @@ void ProcessingLoop::processFrame(Frame* frame) {
     _lastHandState.timestamp = frame->timestamp;
     _hasLastState = true;
 
+    // Gesture Recognition
+    // Heuristics based on OSC_GESTURE_REFERENCE.md
+
+    float pinchDist = 0.0f;
+    float fistDist = 0.0f;
+    std::string gestureName = "unknown";
+    int gestureId = 0;
+
+    if (currentLandmarks.size() >= 21) {
+        auto dist = [](const math::KalmanFilter::Point3f& a, const math::KalmanFilter::Point3f& b) {
+            return std::sqrt(std::pow(a.x - b.x, 2) + std::pow(a.y - b.y, 2) + std::pow(a.z - b.z, 2));
+        };
+
+        // Key Landmarks
+        auto wrist = currentLandmarks[0];
+        auto thumbTip = currentLandmarks[4];
+        auto indexTip = currentLandmarks[8];
+        auto middleTip = currentLandmarks[12];
+        auto ringTip = currentLandmarks[16];
+        auto pinkyTip = currentLandmarks[20];
+
+        auto indexPip = currentLandmarks[6];
+        auto middlePip = currentLandmarks[10];
+        auto ringPip = currentLandmarks[14];
+        auto pinkyPip = currentLandmarks[18];
+
+        // Finger States (Extended vs Folded)
+        // Heuristic: Tip is further from wrist than PIP joint = Extended
+        bool thumbOpen = dist(thumbTip, wrist) > dist(currentLandmarks[2], wrist); // Thumb is special (CMC vs IP)
+        bool indexOpen = dist(indexTip, wrist) > dist(indexPip, wrist);
+        bool middleOpen = dist(middleTip, wrist) > dist(middlePip, wrist);
+        bool ringOpen = dist(ringTip, wrist) > dist(ringPip, wrist);
+        bool pinkyOpen = dist(pinkyTip, wrist) > dist(pinkyPip, wrist);
+
+        // Pinch (Thumb Tip - Index Tip)
+        pinchDist = dist(thumbTip, indexTip);
+
+        // Fist (Average dist of tips to wrist)
+        fistDist = (dist(indexTip, wrist) + dist(middleTip, wrist) + dist(ringTip, wrist) + dist(pinkyTip, wrist)) / 4.0f;
+
+        // Thresholds (Normalized [0,1])
+        const float PINCH_THRESH = 0.05f;
+
+        // Gesture Logic
+        if (!thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 2; gestureName = "FIST";
+        }
+        else if (thumbOpen && indexOpen && middleOpen && ringOpen && pinkyOpen) {
+            // Check for VULCAN (Gap between Middle and Ring)
+            float midRingDist = dist(middleTip, ringTip);
+            if (midRingDist > 0.08f) { // Heuristic gap
+                 gestureId = 10; gestureName = "VULCAN";
+            } else {
+                 gestureId = 3; gestureName = "FIVE";
+            }
+        }
+        else if (pinchDist < PINCH_THRESH) {
+            // Check if others are open
+            if (middleOpen && ringOpen && pinkyOpen) {
+                gestureId = 1; gestureName = "OK"; // or PINCH
+            } else {
+                gestureId = 1; gestureName = "PINCH";
+            }
+        }
+        else if (!thumbOpen && indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 4; gestureName = "POINTING";
+        }
+        else if (thumbOpen && indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 5; gestureName = "TWO"; // L-Shape
+        }
+        else if (!thumbOpen && indexOpen && middleOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 6; gestureName = "PEACE";
+        }
+        else if (thumbOpen && !indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
+            gestureId = 7; gestureName = "CALL_ME";
+        }
+        else if (!thumbOpen && indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
+            gestureId = 8; gestureName = "METAL";
+        }
+        else if (thumbOpen && indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
+            gestureId = 9; gestureName = "LOVE_YOU";
+        }
+        else if (thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 11; gestureName = "THUMBS_UP"; // Orientation check needed for real thumbs up
+        }
+        else {
+            gestureName = "unknown";
+        }
+
+        // Log Gesture occasionally
+        static int gestureLogCounter = 0;
+        if (++gestureLogCounter % 30 == 0) {
+            Logger::info("Gesture: ", gestureName, " (Pinch: ", pinchDist, ")");
+            Logger::info("Fingers: T:", thumbOpen, " I:", indexOpen, " M:", middleOpen, " R:", ringOpen, " P:", pinkyOpen);
+        }
+    }
+
     // Push to OSC Queue
     TrackingResult result;
     result.vipLocked = _vipLocked;
     result.timestamp = frame->timestamp;
+    result.pinchDistance = pinchDist;
+    result.gestureId = gestureId;
+    result.gestureName = gestureName;
 
     // Copy landmarks to result array
     for (size_t i = 0; i < 21; ++i) {

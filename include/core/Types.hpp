@@ -21,6 +21,11 @@ struct TrackingResult {
     std::array<float, 63> landmarks; // 21 points * 3 coords (x, y, z)
     bool vipLocked;
     std::chrono::steady_clock::time_point timestamp;
+
+    // New fields for gestures
+    float pinchDistance = 0.0f;
+    int gestureId = 0; // 0=None, 1=Pinch, 2=Fist
+    std::string gestureName = "unknown"; // For logging/debug
 };
 
 // Type Aliases

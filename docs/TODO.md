@@ -26,20 +26,19 @@
     - *Task:* Implement `AlignedAllocator` and buffer pool.
     - *Goal:* 256-byte alignment for DMA compatibility.
     - *Status:* Implemented `MemoryUtils.hpp`, `Frame.hpp`, and `FramePool.hpp`.
-- [x] **Zero-Copy Implementation**
-    - *Task:* Map OAK-D buffers to Jetson `dma-buf`.
-    - *Goal:* Verify GPU accessibility without CPU copy.
-    - *Status:* Implemented `InputLoop` which copies OAK frames to CUDA-registered `FramePool` buffers (One-Copy strategy).
-    - *Build Fix:* Successfully linked against dynamic `libdepthai-core.so` on Jetson.
-    - *Status:* Implemented `ProcessingLoop` skeleton consuming frames from `SpscQueue`.
+- [ ] **Zero-Copy Implementation**
+    - *Status:* **Moved to Phase 5 (Optimization).** Currently using "One-Copy" strategy (Memcpy).
 
 ## Phase 3: Tracking Engine
 - [x] **Hand Landmark Decoding**
     - *Task:* Parse NN output tensors into C++ structures.
-    - *Status:* Implemented in `ProcessingLoop`.
+    - *Status:* Implemented in `ProcessingLoop`. Fixed FP16/FP32 mismatch using OpenCV.
 - [x] **VIP Logic**
     - *Task:* Implement "Locking" mechanism (15 frames consistency check).
     - *Status:* Implemented in `ProcessingLoop`.
+- [x] **Gesture Recognition**
+    - *Task:* Implement heuristics for FIST, PINCH, FIVE, etc.
+    - *Status:* Implemented in `ProcessingLoop` based on finger joint angles/distances.
 - [x] **Filtering System**
     - [x] Kalman Filter (Position).
     - [ ] One-Euro Filter (Jitter reduction). *Note: Implemented class, but rotation logic pending.*
@@ -50,18 +49,26 @@
     - *Status:* Implemented `OscSender` class.
 - [x] **OSC Message Builder**
     - *Task:* Serialize tracking data to OSC blobs.
-    - *Status:* Implemented in `OscSender::send`.
+    - *Status:* Implemented in `OscSender::send`. Includes Gesture ID/Name.
 - [x] **Backpressure Handling**
     - *Task:* Implement "Drop-Oldest" logic in the network thread.
     - *Status:* Implemented latency check in `OscSender` and non-blocking push in `ProcessingLoop`.
 
 ## Phase 5: Optimization & Metrics
+- [ ] **Debug Preview (MJPEG)**
+    - *Task:* HTTP Stream with visual overlay (Skeleton, BBox, Gestures).
+    - *Priority:* **High** (Essential for tuning).
+- [ ] **Stereo Depth Integration**
+    - *Task:* Add StereoDepth node to pipeline and sample Z-depth at landmarks.
+    - *Priority:* **Medium** (Enhancement for absolute coordinates).
 - [ ] **Performance Monitor**
     - *Task:* Measure Glass-to-OSC latency.
 - [ ] **Systemd Integration**
     - *Task:* Create service file with Realtime priorities.
 - [ ] **Final Profiling**
     - *Task:* Verify CPU < 10% and Latency < 30ms.
+- [ ] **Configuration System**
+    - *Task:* Implement JSON config loader.
 
 ---
 

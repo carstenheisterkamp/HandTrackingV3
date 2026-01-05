@@ -75,6 +75,11 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_blob blob = lo_blob_new(result.landmarks.size() * sizeof(float), result.landmarks.data());
     lo_message_add_blob(msg, blob);
 
+    // Add Gesture Data
+    lo_message_add_float(msg, result.pinchDistance);
+    lo_message_add_int32(msg, result.gestureId);
+    lo_message_add_string(msg, result.gestureName.c_str());
+
     // Send message to /hand/tracking
     int ret = lo_send_message(_loAddress, "/hand/tracking", msg);
     if (ret == -1) {

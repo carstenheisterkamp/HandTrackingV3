@@ -24,6 +24,10 @@ int main() {
 
     core::Logger::info("Starting HandTrackingService V3...");
 
+    // Configuration Constants
+    const std::string OSC_HOST = "127.0.0.1";
+    const std::string OSC_PORT = "9000";
+
     try {
         // 1. Infrastructure
         auto pipelineManager = std::make_shared<core::PipelineManager>();
@@ -57,7 +61,7 @@ int main() {
 
         // 5. Start OSC Sender
         // TODO: Load host/port from config
-        net::OscSender oscSender(oscQueue, "127.0.0.1", "9000");
+        net::OscSender oscSender(oscQueue, OSC_HOST, OSC_PORT);
         oscSender.start();
 
         // 6. Start Processing Loop

@@ -2,6 +2,7 @@
 #include "core/Logger.hpp"
 #include <cstring> // for memcpy
 #include <chrono>
+#include <algorithm> // for std::fill
 #include <depthai/pipeline/datatype/MessageGroup.hpp>
 #include <depthai/pipeline/datatype/NNData.hpp>
 #include <depthai/pipeline/datatype/ImgFrame.hpp>
@@ -56,7 +57,8 @@ void InputLoop::loop() {
 
     while (running_) {
         std::shared_ptr<dai::ImgFrame> imgFrame;
-        std::shared_ptr<dai::NNData> nnData;
+        std::shared_ptr<dai::NNData> landmarkData;
+        std::shared_ptr<dai::NNData> palmData;
 
         if (isSync) {
             auto msgGroup = queue->tryGet<dai::MessageGroup>();
@@ -65,7 +67,8 @@ void InputLoop::loop() {
                 continue;
             }
             imgFrame = msgGroup->get<dai::ImgFrame>("rgb");
-            nnData = msgGroup->get<dai::NNData>("nn");
+            landmarkData = msgGroup->get<dai::NNData>("landmarks");
+            palmData = msgGroup->get<dai::NNData>("palm");
         } else {
             imgFrame = queue->tryGet<dai::ImgFrame>();
             if (!imgFrame) {
@@ -107,7 +110,7 @@ void InputLoop::loop() {
         // frame->captureTimestamp = ... // TODO: Convert imgFrame->getTimestamp()
 
         // 4. Copy NN Data if available
-        if (nnData) {
+        if (landmarkData) {
             // Assuming generic NNData which has a layer named "output" or similar, or just raw data.
             // For hand_landmark_full_sh4, we need to know the output layer name or just take the first one.
             // dai::NNData::getData() returns the raw data of the first layer? No, it returns raw data if it's a single blob?
@@ -127,8 +130,9 @@ void InputLoop::loop() {
             // We need to be careful about exceptions here.
             try {
                 // Use raw data access to avoid API version mismatches
-                auto rawData = nnData->getData();
-                if (rawData.size() >= 63 * sizeof(float)) {
+                auto rawData = landmarkData->getData();
+                size_t size = rawData.size();
+                if (size >= 63 * sizeof(float)) {
                     // Assuming the data is float (FP32)
                     // Note: If the model outputs FP16, we would need conversion.
                     // But usually standard models output FP32 or we can request it.
