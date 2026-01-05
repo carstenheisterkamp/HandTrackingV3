@@ -5,8 +5,17 @@
 * **API:** DepthAI API Version 3 (v3). **Strict requirement:** Do not use legacy `dai::node` Gen2 structures if v3 equivalents exist.
 * **Hardware:** NVIDIA Jetson Orin Nano (8GB), OAK-D Pro PoE (Ethernet/PoE only; USB/libusb path is not used).
 * **Low-Level:** Focus on direct buffer handling and zero-copy transfers between OAK and Jetson GPU (CUDA).
-* **Dev Workflow:** Build and run on Jetson; macOS host is IDE/remote frontend only.
+* **Dev Workflow:** Build and run on Jetson (User: `nvidia`); macOS host is IDE/remote frontend only. **Network:** Always use Tailscale IP `100.101.16.21`. **Build:** CLion Remote with Ninja.
 * **References:** DepthAI v3 C++ API https://docs.luxonis.com/software-v3/depthai/api/cpp/ · depthai-core https://github.com/luxonis/depthai-core
+
+## 🏗 Build Environment & Stability
+
+* **User:** `nvidia` (Home: `/home/nvidia`).
+* **Generator:** Use `Ninja` (via CLion Remote Host).
+* **Cache Management:**
+    * **Stale Cache:** If linking errors occur (especially undefined symbols from `depthai-core` or `spdlog`), aggressively clear the remote CMake cache.
+    * **Command:** `rm -rf /home/nvidia/dev/HandTrackingV3/cmake-build-debug-remote-host/*` before re-running CMake.
+    * **Library Conflicts:** Ensure no static libraries (`.a`) remain in `/usr/local/lib` if shared libraries (`.so`) are expected.
 
 ## 🛠 DepthAI v3 Coding Standards
 
@@ -89,4 +98,5 @@ Implement a `PerformanceMonitor` transmitting the following via `/service/metric
 * **Determinismus:** Fixe Seeds für Filter/Kalman, konstante Sampling-Raten (30/60 Hz), Drop-Oldest Backpressure strikt durchsetzen.
 * **Error Handling:** Früh und klar failen: `Dai`/OSC/Netzwerk-Status prüfen, defensive Checks auf Null/Größe, klare Fehler-Logs; Exceptions im Hotpath vermeiden.
 * **Tests (gezielt):** Unit-Tests für Filter (Kalman/One-Euro Parameter), VIP-Locking (15 Frames), und OSC-Queue-Drop-Policy; einfache Benchmark/Timing-Probe für E2E-Latenz.
+* **No Magic Numbers:** Vermeide "Lucky Numbers" im Code. Nutze `constexpr` Konstanten für Compile-Time Werte oder eine zentrale `Config`-Klasse/JSON für Runtime-Parameter (z.B. Filter-Koeffizienten, Timeouts).
 * **Ordnung:** Keine ad-hoc Skripte oder Tests im Source-Root; Hilfsskripte unter `scripts/`, Tests unter `tests/`, Dokumentation unter `docs/` ablegen.
