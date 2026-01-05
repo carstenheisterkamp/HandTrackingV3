@@ -4,14 +4,14 @@
 #include <atomic>
 #include <memory>
 #include <lo/lo.h>
-#include "Types.hpp"
-#include "Logger.hpp"
+#include "core/Types.hpp"
+#include "core/Logger.hpp"
 
-namespace core {
+namespace net {
 
 class OscSender {
 public:
-    OscSender(std::shared_ptr<OscQueue> inputQueue, const std::string& host, const std::string& port);
+    OscSender(std::shared_ptr<core::OscQueue> inputQueue, const std::string& host, const std::string& port);
     ~OscSender();
 
     void start();
@@ -19,9 +19,9 @@ public:
 
 private:
     void loop();
-    void send(const TrackingResult& result);
+    void send(const core::TrackingResult& result);
 
-    std::shared_ptr<OscQueue> _inputQueue;
+    std::shared_ptr<core::OscQueue> _inputQueue;
     std::string _host;
     std::string _port;
 
@@ -31,5 +31,5 @@ private:
     std::thread _thread;
 };
 
-} // namespace core
+} // namespace net
 

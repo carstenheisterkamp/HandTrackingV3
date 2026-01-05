@@ -1,9 +1,9 @@
-#include "core/OscSender.hpp"
+#include "net/OscSender.hpp"
 #include <iostream>
 
-namespace core {
+namespace net {
 
-OscSender::OscSender(std::shared_ptr<OscQueue> inputQueue, const std::string& host, const std::string& port)
+OscSender::OscSender(std::shared_ptr<core::OscQueue> inputQueue, const std::string& host, const std::string& port)
     : _inputQueue(std::move(inputQueue)), _host(host), _port(port), _running(false) {
 }
 
@@ -20,13 +20,13 @@ void OscSender::start() {
     // Initialize liblo address
     _loAddress = lo_address_new(_host.c_str(), _port.c_str());
     if (!_loAddress) {
-        Logger::error("OscSender: Failed to create LO address for ", _host, ":", _port);
+        core::Logger::error("OscSender: Failed to create LO address for ", _host, ":", _port);
         return;
     }
 
     _running = true;
     _thread = std::thread(&OscSender::loop, this);
-    Logger::info("OscSender started. Target: ", _host, ":", _port);
+    core::Logger::info("OscSender started. Target: ", _host, ":", _port);
 }
 
 void OscSender::stop() {
@@ -35,12 +35,12 @@ void OscSender::stop() {
     if (_thread.joinable()) {
         _thread.join();
     }
-    Logger::info("OscSender stopped.");
+    core::Logger::info("OscSender stopped.");
 }
 
 void OscSender::loop() {
     while (_running) {
-        TrackingResult result;
+        core::TrackingResult result;
         if (_inputQueue->pop_front(result)) {
             // Check latency
             auto now = std::chrono::steady_clock::now();
@@ -48,7 +48,7 @@ void OscSender::loop() {
 
             if (latency > 50) {
                 // Latency Limit: Discard packets older than 50ms
-                // Logger::warn("OscSender: Dropping old packet, latency: ", latency, "ms");
+                // core::Logger::warn("OscSender: Dropping old packet, latency: ", latency, "ms");
                 continue;
             }
 
@@ -59,7 +59,7 @@ void OscSender::loop() {
     }
 }
 
-void OscSender::send(const TrackingResult& result) {
+void OscSender::send(const core::TrackingResult& result) {
     if (!_loAddress) return;
 
     lo_message msg = lo_message_new();
@@ -78,12 +78,12 @@ void OscSender::send(const TrackingResult& result) {
     // Send message to /hand/tracking
     int ret = lo_send_message(_loAddress, "/hand/tracking", msg);
     if (ret == -1) {
-        Logger::error("OscSender: Failed to send message.");
+        core::Logger::error("OscSender: Failed to send message.");
     }
 
     lo_blob_free(blob);
     lo_message_free(msg);
 }
 
-} // namespace core
+} // namespace net
 

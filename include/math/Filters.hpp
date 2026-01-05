@@ -3,8 +3,9 @@
 #include <vector>
 #include <cmath>
 
-namespace core {
+namespace math {
 
+// Force update
 class KalmanFilter {
 public:
     KalmanFilter();
@@ -87,5 +88,5 @@ private:
     }
 };
 
-} // namespace core
+} // namespace math
 

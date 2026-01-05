@@ -3,7 +3,7 @@
 #include "core/Types.hpp"
 #include "core/InputLoop.hpp"
 #include "core/ProcessingLoop.hpp"
-#include "core/OscSender.hpp"
+#include "net/OscSender.hpp"
 #include <csignal>
 #include <atomic>
 #include <thread>
@@ -57,7 +57,7 @@ int main() {
 
         // 5. Start OSC Sender
         // TODO: Load host/port from config
-        core::OscSender oscSender(oscQueue, "127.0.0.1", "9000");
+        net::OscSender oscSender(oscQueue, "127.0.0.1", "9000");
         oscSender.start();
 
         // 6. Start Processing Loop

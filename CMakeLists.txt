@@ -106,18 +106,19 @@ add_executable(HandTrackingService src/main.cpp
         src/core/PipelineManager.cpp
         src/core/InputLoop.cpp
         src/core/ProcessingLoop.cpp
-        src/core/Filters.cpp
-        src/core/OscSender.cpp
+        src/math/Filters.cpp
+        src/net/OscSender.cpp
         include/core/Logger.hpp
         include/core/SpscQueue.hpp
         include/core/PipelineManager.hpp
         include/core/MemoryUtils.hpp
+        include/core/Types.hpp
         include/core/Frame.hpp
         include/core/FramePool.hpp
         include/core/InputLoop.hpp
         include/core/ProcessingLoop.hpp
-        include/core/Filters.hpp
-        include/core/OscSender.hpp)
+        include/math/Filters.hpp
+        include/net/OscSender.hpp)
 
 target_include_directories(HandTrackingService PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"

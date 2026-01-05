@@ -1,8 +1,9 @@
-#include "core/Filters.hpp"
+#include "math/Filters.hpp"
 #include <cmath>
 
-namespace core {
+namespace math {
 
+// Force update
 KalmanFilter::KalmanFilter() {
     reset();
 }
@@ -70,5 +71,4 @@ void OneEuroFilter::reset() {
     _lastTimestamp = -1.0;
 }
 
-} // namespace core
-
+} // namespace math

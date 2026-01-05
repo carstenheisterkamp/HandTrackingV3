@@ -92,7 +92,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         _vipLocked = true;
     }
 
-    std::vector<Point3f> currentLandmarks;
+    std::vector<math::KalmanFilter::Point3f> currentLandmarks;
     currentLandmarks.reserve(21);
 
     // Predict step for all filters
@@ -108,7 +108,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         // Apply Kalman Filter
         auto smoothed = _landmarkFilters[i].update(rawX, rawY, rawZ);
 
-        currentLandmarks.push_back(Point3f{smoothed.x, smoothed.y, smoothed.z});
+        currentLandmarks.push_back(smoothed);
     }
 
     // Calculate velocity if we have history

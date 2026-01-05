@@ -7,7 +7,7 @@
 
 #include "Types.hpp"
 #include "Logger.hpp"
-#include "Filters.hpp"
+#include "math/Filters.hpp"
 
 namespace core {
 
@@ -26,12 +26,8 @@ private:
     void loop();
     void processFrame(Frame* frame);
 
-    struct Point3f {
-        float x, y, z;
-    };
-
     struct HandState {
-        std::vector<Point3f> landmarks;
+        std::vector<math::KalmanFilter::Point3f> landmarks;
         std::chrono::time_point<std::chrono::steady_clock> timestamp;
     };
 
@@ -51,7 +47,7 @@ private:
     bool _vipLocked = false;
     static constexpr int LOCK_THRESHOLD = 15;
 
-    std::vector<KalmanFilter> _landmarkFilters;
+    std::vector<math::KalmanFilter> _landmarkFilters;
 };
 
 } // namespace core
