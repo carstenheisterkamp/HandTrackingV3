@@ -25,6 +25,8 @@ public:
     void start();
     void stop();
 
+    bool hasError() const { return hasError_; }
+
 private:
     void loop();
 
@@ -34,6 +36,7 @@ private:
 
     std::thread thread_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> hasError_{false};
 
     // Queue name to fetch from
     std::string queueName_ = "rgb";

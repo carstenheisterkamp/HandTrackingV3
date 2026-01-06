@@ -8,6 +8,8 @@
 #include "Types.hpp"
 #include "Logger.hpp"
 #include "math/Filters.hpp"
+#include "net/MjpegServer.hpp"
+#include "core/MemoryUtils.hpp"
 
 namespace core {
 
@@ -42,12 +44,30 @@ private:
     HandState _lastHandState;
     bool _hasLastState = false;
 
+    // Last velocity for display
+    struct Velocity { float x = 0, y = 0, z = 0; };
+    Velocity _lastVelocity;
+
     // VIP Logic
     int _lockCounter = 0;
     bool _vipLocked = false;
     static constexpr int LOCK_THRESHOLD = 15;
 
     std::vector<math::KalmanFilter> _landmarkFilters;
+
+    // Debug Preview
+    std::unique_ptr<net::MjpegServer> _mjpegServer;
+
+    // BGR Buffer for MJPEG (Aligned/Pinned for CUDA)
+    std::unique_ptr<uint8_t, AlignedDeleter> _bgrBuffer;
+    size_t _bgrBufferSize = 0;
+    size_t _bgrWidth = 0;
+    size_t _bgrHeight = 0;
+
+    // FPS Counting
+    std::chrono::steady_clock::time_point _lastFpsTime;
+    int _frameCount = 0;
+    float _currentFps = 0.0f;
 };
 
 } // namespace core

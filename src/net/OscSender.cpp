@@ -67,12 +67,10 @@ void OscSender::send(const core::TrackingResult& result) {
     // Add VIP Locked status
     lo_message_add_int32(msg, result.vipLocked ? 1 : 0);
 
-    // Add Landmarks (Blob or individual floats?)
-    // Instructions: "Format: Use compact blobs or bundled messages to reduce overhead."
-    // Let's use a blob for the 63 floats.
-    // 63 * 4 bytes = 252 bytes.
-
-    lo_blob blob = lo_blob_new(result.landmarks.size() * sizeof(float), result.landmarks.data());
+    // Add Landmarks (Blob)
+    // Vector of struct {float,float,float} is contiguous in memory
+    size_t dataSize = result.landmarks.size() * sizeof(core::TrackingResult::NormalizedPoint);
+    lo_blob blob = lo_blob_new(dataSize, result.landmarks.data());
     lo_message_add_blob(msg, blob);
 
     // Add Gesture Data

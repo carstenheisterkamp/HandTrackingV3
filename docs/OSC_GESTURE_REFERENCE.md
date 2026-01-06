@@ -134,4 +134,3 @@ Hand Tracking Model → 21 Landmarks
 Gesture Recognition (Heuristik)
     ↓
 OSC Output (/hand/gesture, /hands/gesture, etc.)
-```

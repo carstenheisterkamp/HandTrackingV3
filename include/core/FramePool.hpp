@@ -8,7 +8,7 @@
 
 namespace core {
 
-template<size_t PoolSize, size_t BufferSize>
+template<size_t PoolSize, size_t BufferSize, size_t DepthBufferSize, size_t MonoBufferSize = 0>
 class FramePool {
 public:
     FramePool() {
@@ -16,12 +16,26 @@ public:
         for (size_t i = 0; i < PoolSize; ++i) {
             auto frame = std::make_unique<Frame>();
 
-            // Allocate aligned buffer
+            // Allocate aligned buffer for Zero-Copy (Host -> Device)
             frame->data = allocate_aligned<uint8_t>(BufferSize);
             frame->size = BufferSize;
 
+            // Allocate Depth Buffer (for computed depth on Jetson)
+            frame->depthData = allocate_aligned<uint8_t>(DepthBufferSize);
+            frame->depthSize = DepthBufferSize;
+
+            // Allocate Mono Left/Right Buffers (for stereo input to Jetson GPU)
+            if constexpr (MonoBufferSize > 0) {
+                frame->monoLeftData = allocate_aligned<uint8_t>(MonoBufferSize);
+                frame->monoRightData = allocate_aligned<uint8_t>(MonoBufferSize);
+                frame->monoSize = MonoBufferSize;
+                register_buffer_cuda(frame->monoLeftData.get(), MonoBufferSize);
+                register_buffer_cuda(frame->monoRightData.get(), MonoBufferSize);
+            }
+
             // Register with CUDA
             register_buffer_cuda(frame->data.get(), BufferSize);
+            register_buffer_cuda(frame->depthData.get(), DepthBufferSize);
 
             // Add to storage and free queue
             if (!freeQueue_.try_push(frame.get())) {
@@ -31,7 +45,7 @@ public:
             storage_.push_back(std::move(frame));
         }
 
-        Logger::info("FramePool initialized with ", PoolSize, " frames of size ", BufferSize);
+        Logger::info("FramePool initialized with ", PoolSize, " pinned frames");
     }
 
     /**

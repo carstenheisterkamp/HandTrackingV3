@@ -25,8 +25,8 @@ private:
     struct AxisFilter {
         float x = 0.0f; // State estimate
         float p = 1.0f; // Estimation error covariance
-        float q = 0.01f; // Process noise covariance
-        float r = 0.1f; // Measurement noise covariance
+        float q = 0.05f; // Process noise covariance (Increased for better tracking of movement)
+        float r = 0.05f; // Measurement noise covariance (Decreased to trust measurement more)
         float k = 0.0f; // Kalman gain
 
         void predict() {

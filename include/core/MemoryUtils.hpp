@@ -54,15 +54,38 @@ std::unique_ptr<T, AlignedDeleter> allocate_aligned(size_t count, size_t alignme
 inline void register_buffer_cuda(void* ptr, size_t size) {
 #ifdef ENABLE_CUDA
     cudaError_t err = cudaHostRegister(ptr, size, cudaHostRegisterMapped);
-    if (err != cudaSuccess) {
+    if (err == cudaSuccess) {
+        Logger::debug("Registered buffer for CUDA Zero-Copy: ", ptr, " Size: ", size);
+    } else if (err == cudaErrorHostMemoryAlreadyRegistered) {
+        // Buffer already registered (e.g., from previous run), this is OK
+        Logger::debug("Buffer already registered for CUDA: ", ptr);
+    } else {
         Logger::error("cudaHostRegister failed: ", cudaGetErrorString(err));
-        throw std::runtime_error("Failed to register CUDA buffer");
+        // Don't throw - continue without zero-copy for this buffer
+        // throw std::runtime_error("Failed to register CUDA buffer");
     }
-    Logger::debug("Registered buffer for CUDA Zero-Copy: ", ptr, " Size: ", size);
 #else
     (void)ptr;
     (void)size;
     Logger::debug("CUDA not enabled. Skipping buffer registration.");
+#endif
+}
+
+/**
+ * Gets the device pointer for a registered host pointer.
+ */
+inline void* get_device_pointer(void* hostPtr) {
+#ifdef ENABLE_CUDA
+    void* devPtr = nullptr;
+    cudaError_t err = cudaHostGetDevicePointer(&devPtr, hostPtr, 0);
+    if (err != cudaSuccess) {
+        Logger::error("cudaHostGetDevicePointer failed: ", cudaGetErrorString(err));
+        return nullptr;
+    }
+    return devPtr;
+#else
+    (void)hostPtr;
+    return nullptr;
 #endif
 }
 

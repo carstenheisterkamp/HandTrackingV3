@@ -26,6 +26,7 @@ public:
         int previewWidth = 640;
         int previewHeight = 360;
         std::string nnPath; // Path to the neural network blob
+        std::string deviceIp; // IP address for PoE devices (e.g., "169.254.1.222")
     };
 
     PipelineManager();

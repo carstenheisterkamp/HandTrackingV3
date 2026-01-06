@@ -108,6 +108,7 @@ add_executable(HandTrackingService src/main.cpp
         src/core/ProcessingLoop.cpp
         src/math/Filters.cpp
         src/net/OscSender.cpp
+        src/net/MjpegServer.cpp
         include/core/Logger.hpp
         include/core/SpscQueue.hpp
         include/core/PipelineManager.hpp
@@ -118,7 +119,8 @@ add_executable(HandTrackingService src/main.cpp
         include/core/InputLoop.hpp
         include/core/ProcessingLoop.hpp
         include/math/Filters.hpp
-        include/net/OscSender.hpp)
+        include/net/OscSender.hpp
+        include/net/MjpegServer.hpp)
 
 target_include_directories(HandTrackingService PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
@@ -137,7 +139,7 @@ target_link_libraries(HandTrackingService PRIVATE
 
 if(CUDAToolkit_FOUND)
     target_compile_definitions(HandTrackingService PRIVATE ENABLE_CUDA)
-    target_link_libraries(HandTrackingService PRIVATE CUDA::cudart)
+    target_link_libraries(HandTrackingService PRIVATE CUDA::cudart CUDA::nppicc)
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
