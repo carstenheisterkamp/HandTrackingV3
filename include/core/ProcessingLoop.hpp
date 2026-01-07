@@ -71,7 +71,9 @@ private:
     // FPS Counting
     std::chrono::steady_clock::time_point _lastFpsTime;
     int _frameCount = 0;
-    float _currentFps = 0.0f;
+    float _currentFps = 0.0f;// System Performance (cached, updated every 5 seconds)
+    std::string _performanceSummary;
+    std::chrono::steady_clock::time_point _lastPerfUpdate;
 };
 
 } // namespace core

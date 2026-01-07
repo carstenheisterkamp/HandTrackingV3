@@ -1,0 +1,13 @@
+[Unit]
+Description=Jetson Maximum Performance at Boot
+After=nvpmodel.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nvpmodel -m 0
+ExecStart=/usr/bin/jetson_clocks
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

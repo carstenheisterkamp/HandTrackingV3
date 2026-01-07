@@ -3,6 +3,7 @@
 #include "core/Types.hpp"
 #include "core/InputLoop.hpp"
 #include "core/ProcessingLoop.hpp"
+#include "core/SystemMonitor.hpp"
 #include "net/OscSender.hpp"
 #include <csignal>
 #include <atomic>
@@ -24,6 +25,13 @@ int main() {
 
     core::Logger::info("Starting HandTrackingService V3...");
 
+    // Log System Performance (informational only)
+    core::Logger::info("System: ", core::SystemMonitor::getPerformanceSummary());
+    auto perf = core::SystemMonitor::getPerformanceStatus();
+    if (perf.powerMode != "MAXN") {
+        core::Logger::warn("Not in MAXN mode! Run: sudo nvpmodel -m 0 && sudo jetson_clocks");
+    }
+
     // Configuration Constants
     const std::string OSC_HOST = "127.0.0.1";
     const std::string OSC_PORT = "9000";
@@ -41,12 +49,12 @@ int main() {
 
             // 2. Configuration
             core::PipelineManager::Config config;
-            config.fps = 30.0f;
+            config.fps = 60.0f;  // Maximale FPS für beste Performance
             config.ispScaleNum = 1;
             config.ispScaleDenom = 3; // 1080p -> 360p (Preview)
             config.previewWidth = 640;
             config.previewHeight = 360;
-            config.nnPath = "models/hand_landmark_full_openvino_2022.1_6shave.blob";
+            config.nnPath = "models/hand_landmark_full_sh4.blob";
             config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
 
             // 3. Init & Start Pipeline

@@ -106,6 +106,7 @@ add_executable(HandTrackingService src/main.cpp
         src/core/PipelineManager.cpp
         src/core/InputLoop.cpp
         src/core/ProcessingLoop.cpp
+        src/core/SystemMonitor.cpp
         src/math/Filters.cpp
         src/net/OscSender.cpp
         src/net/MjpegServer.cpp
@@ -118,6 +119,7 @@ add_executable(HandTrackingService src/main.cpp
         include/core/FramePool.hpp
         include/core/InputLoop.hpp
         include/core/ProcessingLoop.hpp
+        include/core/SystemMonitor.hpp
         include/math/Filters.hpp
         include/net/OscSender.hpp
         include/net/MjpegServer.hpp)

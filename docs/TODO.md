@@ -64,10 +64,13 @@
     - *Task:* HTTP Stream with visual overlay (Skeleton, BBox, Gestures).
     - *Priority:* **High** (Essential for tuning).
     - *Status:* Implemented MjpegServer and overlay in ProcessingLoop.
-- [ ] **Stereo Depth Integration (Jetson GPU)**
-    - *Task:* Stream Mono L/R from OAK-D, compute depth on Jetson via CUDA/OpenCV GPU.
+- [x] **Stereo Depth Integration (Jetson GPU) - Infrastructure**
+    - *Task:* Stream Mono L/R from OAK-D to Jetson.
+    - *Status (2026-01-07):* Mono L/R cameras added to pipeline, synced with RGB/NN outputs. Frame structure extended with hasStereoData flag. Data copied to pinned memory in InputLoop.
+    - *Next:* Implement CUDA Stereo Matching kernel in ProcessingLoop.
+- [ ] **Stereo Depth Computation (CUDA Kernel)**
+    - *Task:* Implement GPU-based stereo matching (e.g., Block Matching or SGM) on Jetson.
     - *Priority:* **Medium** (Enhancement for absolute Z coordinates).
-    - *Note (2026-01-06):* **Architecture Change** - StereoDepth cannot run on OAK-D alongside 2 NNs due to CMX memory limits. Depth will be computed on Jetson GPU instead. Mono camera streaming infrastructure prepared in `Frame.hpp` and `FramePool.hpp`.
 - [ ] **Performance Monitor**
     - *Task:* Measure Glass-to-OSC latency.
 - [ ] **Systemd Integration**
@@ -80,6 +83,13 @@
 ---
 
 ## Change Log / Decisions
+- **2026-01-07**:
+  - **Mono L/R Cameras** added to pipeline for GPU-based stereo depth (streaming infrastructure complete).
+  - **GPU Frequency Detection** improved with multiple fallback paths including tegrastats parsing.
+  - **Performance Scripts** updated: jetson_max_performance.sh and setup_sudoers.sh rewritten for Orin Nano.
+  - **Systemd Service** fixed for proper boot-time performance optimization.
+  - **Landmark/Palm normalization** added: auto-detects pixel coordinates (>1.0) and normalizes.
+  - **Debug logging** for NN outputs removed (confirmed layer structure).
 - **2026-01-06**: 
   - **Major Architecture Change:** StereoDepth removed from OAK-D pipeline due to E_OUT_OF_MEM errors. The Myriad X chip (~2.5MB CMX) cannot fit StereoDepth + Palm Detection + Hand Landmarks simultaneously.
   - **New Architecture:** 

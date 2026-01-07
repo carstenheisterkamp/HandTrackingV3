@@ -38,6 +38,7 @@ struct Frame {
     size_t depthHeight = 0;
     size_t monoWidth = 0;     // 640
     size_t monoHeight = 0;    // 400
+    bool hasStereoData = false; // True when monoLeft/Right are valid
     int type = 0; // dai::ImgFrame::Type
     uint32_t sequenceNum = 0;
 

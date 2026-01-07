@@ -97,130 +97,91 @@ endif ()
 
 ```
 
-## 6. Build & Ausführung
+## 6. Performance-Setup (WICHTIG!)
 
-Dein optimiertes Service-Fileerstellt unter `/etc/systemd/system/hand-tracking.service`:
-```yaml
+Damit der Jetson Orin Nano die volle Leistung (35-50 FPS) erreicht, muss er im MAXN-Modus laufen. 
+
+**Installation (einmalig):**
+Führen Sie dieses Skript aus, damit der **Hochleistungsmodus automatisch beim Booten** aktiviert wird:
+
+```bash
+cd ~/dev/HandTrackingV3/scripts
+sudo bash setup_performance_autostart.sh
+```
+
+**Ergebnis:**
+- ✅ **Automatischer Start:** Der Jetson bootet immer im MAXN-Modus.
+- ✅ **Kein Passwort:** Es ist keine manuelle Eingabe mehr nötig.
+
+**System prüfen:**
+```bash
+# Zeigt CPU/GPU Clocks und Power Mode
+bash ~/dev/HandTrackingV3/scripts/diagnose_jetson.sh
+```
+
+## 7. Auto-Start der App (Optional: Produktion)
+
+Wenn die App automatisch beim Booten starten soll (nachdem der Performance-Modus aktiv ist), nutzen Sie den `hand-tracking.service`.
+
+**Service-Datei (`scripts/hand-tracking.service`):**
+```ini
 [Unit]
 Description=Ultra-Low-Latency Hand Tracking (C++)
-# nv-l4t-boot-complete sorgt dafür, dass die NVIDIA-Treiber voll geladen sind
-After=network-online.target nv-l4t-boot-complete.service tailscaled.service
+After=network-online.target jetson-performance.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=nvidia
 Group=nvidia
-# Während der Entwicklung auf den CLion-Pfad zeigen:
 WorkingDirectory=/home/nvidia/dev/HandTrackingV3
-ExecStart=/home/nvidia/dev/HandTrackingV3/cmake-build-release/HandTrackingService
+# Pfad zum Binary anpassen (Release oder Debug)
+ExecStart=/home/nvidia/dev/HandTrackingV3/cmake-build-debug-remote-host/HandTrackingService
 
 # PERFORMANCE TUNING
-# FIFO 90 ist top! Verhindert, dass der Kernel den Prozess unterbricht.
 CPUSchedulingPolicy=fifo
 CPUSchedulingPriority=90
 Nice=-20
 
 # UMGEBUNGSVARIABLEN
-# Falls du CUDA in C++ nutzt, ist der Pfad wichtig
 Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu:/usr/local/lib
 Environment=OAKD_DEVICE_IP=169.254.1.222
-# Verhindert Fehlermeldungen von OpenCV/QT bei Headless-Betrieb
 Environment=QT_QPA_PLATFORM=offscreen
 
-# STABILITÄT
 Restart=on-failure
 RestartSec=2s
 
 [Install]
 WantedBy=multi-user.target
-~                                                                                                                                                                                          
-~                                                                                                                                                                                          
-"hand-tracking.service" 33L, 1020B                                                                                                                                       16,26       Alles
-[Unit]
-Description=Ultra-Low-Latency Hand Tracking (C++)
-# nv-l4t-boot-complete sorgt dafür, dass die NVIDIA-Treiber voll geladen sind
-After=network-online.target nv-l4t-boot-complete.service tailscaled.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=nvidia
-Group=nvidia
-# Während der Entwicklung auf den CLion-Pfad zeigen:
-# Production:
-# WorkingDirectory=/opt/hand-tracking-service
-# Dev
-WorkingDirectory=/home/nvidia/dev/HandTrackingV3
-ExecStart=/home/nvidia/dev/HandTrackingV3/cmake-build-release/HandTrackingService
-
-# PERFORMANCE TUNING
-# FIFO 90 ist top! Verhindert, dass der Kernel den Prozess unterbricht.
-CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=90
-Nice=-20
-
-# UMGEBUNGSVARIABLEN
-# Falls du CUDA in C++ nutzt, ist der Pfad wichtig
-Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu:/usr/local/lib
-Environment=OAKD_DEVICE_IP=169.254.1.222
-# Verhindert Fehlermeldungen von OpenCV/QT bei Headless-Betrieb
-Environment=QT_QPA_PLATFORM=offscreen
-
-# STABILITÄT
-Restart=on-failure
-RestartSec=2s                                                                                                                                        14,6       Anfang
-
-[Install]
-WantedBy=multi-user.target
-
 ```
-In den models ordner wechseln und die Modelle herunterladen:
+
+**Installation:**
+```bash
+sudo cp scripts/hand-tracking.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable hand-tracking.service
+```
+
+## 8. Modelle installieren
+
+Die Modelle sind zwingend erforderlich.
 
 ```bash
 cd models/
 
 # Option A: Vorcompilierte 4-SHAVE Blobs (Legacy)
-wget https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/palm_detection_sh4.blob
-wget https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/hand_landmark_full_sh4.blob
+wget -nc https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/palm_detection_sh4.blob
+wget -nc https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/hand_landmark_full_sh4.blob
 
-# Option B: Optimierte 6-SHAVE Blobs selbst kompilieren (EMPFOHLEN)
+# Option B: Optimierte 6-SHAVE Blobs (Empfohlen für V3)
 # Siehe scripts/compile_hand_landmark.py
 ```
 
-### SHAVE-Konfiguration (Performance-Optimierung)
+### SHAVE-Konfiguration (Performance)
 
-Die OAK-D Pro hat 12 SHAVE-Kerne auf dem Myriad X Chip. Die Verteilung beeinflusst die Performance:
-
-| Konfiguration | Palm Detection | Hand Landmark | FPS (geschätzt) | Anmerkung |
-|---------------|----------------|---------------|-----------------|-----------|
-| 4+4 SHAVEs    | 4              | 4             | ~25-30 FPS      | Legacy, konservativ |
-| **6+6 SHAVEs**| 6              | 6             | ~35-40 FPS      | **Optimal für 2 NNs** |
-| 8+4 SHAVEs    | 8              | 4             | ~30-35 FPS      | Unbalanciert |
-
-**Erwarteter Performance-Gewinn mit 6 SHAVEs:**
-- **+20-30% schnellere Inferenz** pro Modell
-- **+5-10 FPS** im Gesamtsystem
-- **Keine Änderung der Erkennungsgenauigkeit** - die Modellgewichte sind identisch, nur die Parallelisierung ist höher
-
-**Hinweis zur Genauigkeit:**
-Die SHAVE-Anzahl beeinflusst **nur die Geschwindigkeit**, nicht die Genauigkeit. Das Modell bleibt identisch:
-- Gleiche Landmark-Präzision (21 Punkte)
-- Gleiche Palm-Detection-Confidence-Schwelle
-- Gleiche Tracking-Stabilität
-
-Die aktuell verwendeten Blobs:
-- `palm_detection_128x128_openvino_2022.1_6shave.blob` (4.6 MB)
-- `hand_landmark_full_openvino_2022.1_6shave.blob` (11.9 MB)
-
-### Die 21 Gelenkpunkte (Landmarks)
-   Damit du weißt, welche Daten du später per OSC sendest, hier eine Übersicht der Indizes, die das Modell liefert:
-
-0: Handgelenk (Wrist)
-
-4, 8, 12, 16, 20: Die Fingerspitzen (Thumb, Index, Middle, Ring, Pinky)
-3, 7, 11, 15, 19: Die mittleren Gelenke der Finger
-2, 6, 10, 14, 18: Die unteren Gelenke der Finger
-1, 5, 9, 13, 17: Die Basisgelenke der Finger
-Diese Punkte kannst du nutzen, um die Position und Bewegung der Hand im Raum zu verfolgen und entsprechende OSC-Nachrichten zu generieren.
+Die OAK-D Pro hat 16 SHAVE-Kerne (RVC3) bzw. 12 (RVC2).
+Die V3 Pipeline nutzt:
+- **6 SHAVEs** für Palm Detection
+- **6 SHAVEs** für Hand Landmarks
+- Das ermöglicht **35-40 FPS**.
 ```

@@ -1,29 +1,29 @@
 [Unit]
-WantedBy=multi-user.target
-[Install]
+Description=Hand Tracking Service V3 (DepthAI)
+After=network.target multi-user.target
+Wants=network-online.target
 
+[Service]
+Type=simple
+User=nvidia
+WorkingDirectory=/home/nvidia/dev/HandTrackingV3/build
+ExecStartPre=/home/nvidia/dev/HandTrackingV3/scripts/jetson_max_performance.sh
+ExecStart=/home/nvidia/dev/HandTrackingV3/build/HandTrackingService
+Restart=always
+RestartSec=5
+
+# Environment
 Environment="DISPLAY=:0"
 Environment="LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/aarch64-linux-gnu"
-# Ensure shared libraries are found (especially if DepthAI/OpenCV are in custom locations)
-# Environment
 
+# Performance Tuning - Real-time priority
 Nice=-20
-# CPUSchedulingPriority=90
-# CPUSchedulingPolicy=fifo
-# Or run as root (not recommended).
-# You can add this by running: sudo setcap cap_sys_nice=+ep /path/to/executable
-# Note: To use SCHED_FIFO, the user/service needs CAP_SYS_NICE capability.
-# Performance Tuning
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=90
 
-RestartSec=5
-Restart=always
-ExecStart=/home/nvidia/dev/HandTrackingV3/cmake-build-debug-remote-host/HandTrackingService
-WorkingDirectory=/home/nvidia/dev/HandTrackingV3/cmake-build-debug-remote-host
-# Adjust this path if you deploy to a different location (e.g. /opt/hand-tracking)
-User=nvidia
-Type=simple
-[Service]
+# Resource Limits
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
 
-After=network.target multi-user.target
-Description=Hand Tracking Service V3 (DepthAI)
-
+[Install]
+WantedBy=multi-user.target

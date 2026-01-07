@@ -132,27 +132,30 @@ void PipelineManager::createPipeline(const Config& config) {
     if (!config.nnPath.empty()) {
         Logger::info("Creating Hand Tracking Pipeline (Palm + Landmarks)...");
 
-        // 1. Palm Detection Node (6 SHAVEs)
+        // 1. Palm Detection Node (using sh4 blob)
         auto palmDetect = pipeline_->create<dai::node::NeuralNetwork>();
-        palmDetect->setBlobPath("models/palm_detection_128x128_openvino_2022.1_6shave.blob");
-        palmDetect->setNumInferenceThreads(2);  // Optimal per device recommendation
+        palmDetect->setBlobPath("models/palm_detection_sh4.blob");
+        // Warning: "Number of inference threads assigned for network is 1, assigning 2 will likely yield in better performance"
+        palmDetect->setNumInferenceThreads(2);
+        palmDetect->setNumNCEPerInferenceThread(1); // Explicitly limit NCE to 1 per thread to avoid resource exhaustion
 
         auto palmInput = cam->requestOutput(
             std::make_pair(128, 128),
-            dai::ImgFrame::Type::RGB888p,
+            dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
             dai::ImgResizeMode::STRETCH,
             config.fps
         );
         palmInput->link(palmDetect->input);
 
-        // 2. Landmark Node
+        // 2. Landmark Node (using sh4 blob)
         auto landmarkNN = pipeline_->create<dai::node::NeuralNetwork>();
         landmarkNN->setBlobPath(config.nnPath);
-        landmarkNN->setNumInferenceThreads(2);  // Optimal per device recommendation
+        landmarkNN->setNumInferenceThreads(2); // Attempting 2 threads for landmarks as well for throughput
+        landmarkNN->setNumNCEPerInferenceThread(1); // Explicitly limit NCE to 1 per thread
 
         auto nnInput = cam->requestOutput(
             std::make_pair(224, 224),
-            dai::ImgFrame::Type::RGB888p,
+            dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
             dai::ImgResizeMode::STRETCH,
             config.fps
         );
@@ -160,7 +163,7 @@ void PipelineManager::createPipeline(const Config& config) {
 
         // Sync node: RGB + Palm + Landmarks
         auto sync = pipeline_->create<dai::node::Sync>();
-        sync->setSyncThreshold(std::chrono::milliseconds(50));
+        sync->setSyncThreshold(std::chrono::milliseconds(20));
 
         rgbOutput->link(sync->inputs["rgb"]);
         palmDetect->out.link(sync->inputs["palm"]);

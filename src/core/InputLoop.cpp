@@ -60,6 +60,8 @@ void InputLoop::loop() {
             std::shared_ptr<dai::ImgFrame> imgFrame;
             std::shared_ptr<dai::NNData> landmarkData;
             std::shared_ptr<dai::NNData> palmData;
+            std::shared_ptr<dai::ImgFrame> monoLeftFrame;
+            std::shared_ptr<dai::ImgFrame> monoRightFrame;
 
             if (isSync) {
                 auto msgGroup = queue->tryGet<dai::MessageGroup>();
@@ -70,6 +72,8 @@ void InputLoop::loop() {
                 imgFrame = msgGroup->get<dai::ImgFrame>("rgb");
                 landmarkData = msgGroup->get<dai::NNData>("landmarks");
                 palmData = msgGroup->get<dai::NNData>("palm");
+                monoLeftFrame = msgGroup->get<dai::ImgFrame>("monoLeft");
+                monoRightFrame = msgGroup->get<dai::ImgFrame>("monoRight");
             } else {
                 imgFrame = queue->tryGet<dai::ImgFrame>();
                 if (!imgFrame) {
@@ -133,13 +137,13 @@ void InputLoop::loop() {
             if (landmarkData) {
                 try {
                     // Robust Layer Selection:
-                    // The model should output 63 floats (21 landmarks * 3).
-                    // We iterate through all layers to find the one with the correct size.
+                    // The model outputs 63 floats (21 landmarks * 3) in layer 'Identity_3_dense/BiasAdd/Add'
                     auto layerNames = landmarkData->getAllLayerNames();
                     bool found = false;
 
                     for (const auto& name : layerNames) {
                         auto tensor = landmarkData->getTensor<float>(name);
+
                         if (tensor.size() == 63) {
                             frame->nnData.assign(tensor.begin(), tensor.end());
                             found = true;
@@ -186,6 +190,29 @@ void InputLoop::loop() {
                 }
             } else {
                 frame->palmData.clear();
+            }
+
+            // 4c. Copy Mono L/R Data for GPU Stereo Depth
+            if (monoLeftFrame && monoRightFrame) {
+                size_t monoSize = monoLeftFrame->getData().size();
+
+                // Allocate mono buffers if needed
+                if (!frame->monoLeftData || frame->monoWidth != monoLeftFrame->getWidth()) {
+                    frame->monoWidth = monoLeftFrame->getWidth();
+                    frame->monoHeight = monoLeftFrame->getHeight();
+                    // Note: monoLeftData/monoRightData should be pre-allocated in FramePool
+                    // For now, we copy into existing buffers if they exist
+                }
+
+                if (frame->monoLeftData && monoSize <= frame->monoWidth * frame->monoHeight) {
+                    std::memcpy(frame->monoLeftData.get(), monoLeftFrame->getData().data(), monoSize);
+                    std::memcpy(frame->monoRightData.get(), monoRightFrame->getData().data(), monoSize);
+                    frame->hasStereoData = true;
+                } else {
+                    frame->hasStereoData = false;
+                }
+            } else {
+                frame->hasStereoData = false;
             }
 
             // 5. Push to Processing Queue

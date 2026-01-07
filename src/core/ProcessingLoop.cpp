@@ -1,4 +1,5 @@
 #include "core/ProcessingLoop.hpp"
+#include "core/SystemMonitor.hpp"
 #include <chrono>
 #include <algorithm> // Added for std::clamp
 #include <opencv2/imgproc.hpp> // For drawing
@@ -23,6 +24,10 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
 
     // Initialize MJPEG Server
     _mjpegServer = std::make_unique<net::MjpegServer>(8080);
+
+    // Initialize performance cache
+    _performanceSummary = SystemMonitor::getPerformanceSummary();
+    _lastPerfUpdate = std::chrono::steady_clock::now();
 }
 
 ProcessingLoop::~ProcessingLoop() {
@@ -230,6 +235,21 @@ void ProcessingLoop::processFrame(Frame* frame) {
         float rawY = frame->nnData[i * 3 + 1];
         float rawZ = frame->nnData[i * 3 + 2]; // Relative depth from NN model
 
+        // DEBUG: Log first landmark values once
+        static bool landmarkValuesLogged = false;
+        if (!landmarkValuesLogged && i == 0) {
+            Logger::info("Raw Landmark 0 (Wrist): X=", rawX, " Y=", rawY, " Z=", rawZ);
+            landmarkValuesLogged = true;
+        }
+
+        // Auto-normalize if values are in pixel coordinates (0-224) instead of (0-1)
+        // The hand_landmark model outputs in pixel space of the input (224x224)
+        if (rawX > 1.0f || rawY > 1.0f) {
+            rawX /= 224.0f;
+            rawY /= 224.0f;
+            // Z bleibt relativ (oft im Bereich -0.5 bis 0.5 oder ähnlich)
+        }
+
         // TODO: Compute metric depth on Jetson GPU using frame->monoLeftData/monoRightData
         // For now, use the relative Z coordinate from the landmark model.
         // GPU Stereo implementation would go here:
@@ -282,6 +302,15 @@ void ProcessingLoop::processFrame(Frame* frame) {
             if (++logCounter % 30 == 0) {
                 Logger::info("Wrist Velocity: [", vx, ", ", vy, ", ", vz, "]");
             }
+        }
+    }
+
+    // VIP Locking: Increment counter when hand is consistently tracked
+    if (_lockCounter < LOCK_THRESHOLD) {
+        _lockCounter++;
+        if (_lockCounter >= LOCK_THRESHOLD) {
+            _vipLocked = true;
+            Logger::info("VIP LOCKED after ", LOCK_THRESHOLD, " consistent frames");
         }
     }
 
@@ -390,6 +419,12 @@ void ProcessingLoop::processFrame(Frame* frame) {
     // Draw Debug Overlay (always, even if no hands detected)
     drawDebugOverlay(debugFrame, frame, currentLandmarks, gestureName, gestureId, pinchDist);
 
+    // If no landmarks were found or valid, return now, but after drawing the overlay.
+    // This allows the user to see the video and palm boxes even if landmarks fail.
+    if (frame->nnData.size() < 63) {
+        return;
+    }
+
     // Update result for OSC
     result.vipLocked = _vipLocked;
     result.timestamp = frame->timestamp;
@@ -429,20 +464,59 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
     cv::putText(debugFrame, fpsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
     yPos += lineHeight;
 
-    // 3. Count Palm Detections (Hands)
+    // 3. System Performance (Update every 5 seconds)
+    auto perfNow = std::chrono::steady_clock::now();
+    auto perfElapsed = std::chrono::duration_cast<std::chrono::seconds>(perfNow - _lastPerfUpdate).count();
+    if (perfElapsed >= 5) {
+        _performanceSummary = SystemMonitor::getPerformanceSummary();
+        _lastPerfUpdate = perfNow;
+    }
+    cv::putText(debugFrame, _performanceSummary, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 255), 1);
+    yPos += lineHeight;
+
+    // 4. Count Palm Detections (Hands)
     int numHands = 0;
     std::vector<cv::Rect> palmBoxes;
     if (!frame->palmData.empty()) {
+        // DEBUG: Log palm data structure once
+        static bool palmDataLogged = false;
+        if (!palmDataLogged && frame->palmData.size() >= 7) {
+            Logger::info("Palm Detection Raw: size=", frame->palmData.size(),
+                         " [0]=", frame->palmData[0], " [1]=", frame->palmData[1],
+                         " [2]=", frame->palmData[2], " [3]=", frame->palmData[3],
+                         " [4]=", frame->palmData[4], " [5]=", frame->palmData[5],
+                         " [6]=", frame->palmData[6]);
+            palmDataLogged = true;
+        }
+
+        // Palm detection output format varies by model
+        // Common formats: [x_center, y_center, w, h, conf, ...] or [conf, x1, y1, x2, y2, ...]
         int numDetections = frame->palmData.size() / 7;
         for (int i = 0; i < numDetections; ++i) {
             float conf = frame->palmData[i * 7 + 2];
-            if (conf > 0.5f) {
+            if (conf > 0.4f) {  // Confidence threshold
                 numHands++;
-                float x1 = frame->palmData[i * 7 + 3] * debugFrame.cols;
-                float y1 = frame->palmData[i * 7 + 4] * debugFrame.rows;
-                float x2 = frame->palmData[i * 7 + 5] * debugFrame.cols;
-                float y2 = frame->palmData[i * 7 + 6] * debugFrame.rows;
-                palmBoxes.emplace_back(cv::Point(x1, y1), cv::Point(x2, y2));
+                float x1 = frame->palmData[i * 7 + 3];
+                float y1 = frame->palmData[i * 7 + 4];
+                float x2 = frame->palmData[i * 7 + 5];
+                float y2 = frame->palmData[i * 7 + 6];
+
+                // Auto-normalize if values are in pixel coordinates (>1.0)
+                // Palm model input is 128x128
+                if (x1 > 1.0f || y1 > 1.0f || x2 > 1.0f || y2 > 1.0f) {
+                    x1 /= 128.0f;
+                    y1 /= 128.0f;
+                    x2 /= 128.0f;
+                    y2 /= 128.0f;
+                }
+
+                // Scale to debug frame size
+                int px1 = static_cast<int>(x1 * debugFrame.cols);
+                int py1 = static_cast<int>(y1 * debugFrame.rows);
+                int px2 = static_cast<int>(x2 * debugFrame.cols);
+                int py2 = static_cast<int>(y2 * debugFrame.rows);
+
+                palmBoxes.emplace_back(cv::Point(px1, py1), cv::Point(px2, py2));
             }
         }
     }
@@ -451,8 +525,9 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
     cv::putText(debugFrame, handsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
     yPos += lineHeight;
 
-    // 4. VIP Status
-    std::string vipStr = _vipLocked ? "VIP: LOCKED" : "VIP: Searching...";
+    // 5. VIP Status (Count: 0 when searching, 1 when locked)
+    int vipCount = _vipLocked ? 1 : 0;
+    std::string vipStr = "VIP: " + std::to_string(vipCount) + (_vipLocked ? " (Locked)" : " (Searching)");
     cv::Scalar vipColor = _vipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
     cv::putText(debugFrame, vipStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, vipColor, 1);
     yPos += lineHeight;
@@ -465,7 +540,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
                     cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
     }
 
-    // === DRAW LANDMARKS & SKELETON ===
+    // === DRAW LANDMARKS & SKELETON + PER-HAND INFO ===
     if (!currentLandmarks.empty()) {
         cv::Scalar skeletonColor = (numHands > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(100, 100, 100);
         cv::Scalar jointColor = (numHands > 0) ? cv::Scalar(0, 0, 255) : cv::Scalar(100, 100, 100);
@@ -499,33 +574,65 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
             cv::circle(debugFrame, pt, 4, jointColor, -1);
         }
 
-        // === BOTTOM LEFT: Hand Details ===
-        int bottomY = debugFrame.rows - 100;
-
-        // Position (Wrist = Landmark 0)
+        // === PER-HAND INFO (drawn next to the hand) ===
+        // Use wrist position as anchor point
         auto wrist = currentLandmarks[0];
-        std::string posStr = "Pos: (" + std::to_string((int)(wrist.x * 100)) + "%, "
-                                      + std::to_string((int)(wrist.y * 100)) + "%)";
-        cv::putText(debugFrame, posStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-        bottomY += lineHeight;
+        int anchorX = static_cast<int>(wrist.x * frame->width) + 20; // Offset to the right of wrist
+        int anchorY = static_cast<int>(wrist.y * frame->height) - 60; // Above wrist
+
+        // Clamp to screen bounds
+        anchorX = std::clamp(anchorX, 10, (int)frame->width - 150);
+        anchorY = std::clamp(anchorY, 20, (int)frame->height - 80);
+
+        int handInfoY = anchorY;
+        int smallLineHeight = 16;
+
+        // Background for readability
+        cv::rectangle(debugFrame,
+                      cv::Point(anchorX - 5, anchorY - 15),
+                      cv::Point(anchorX + 140, anchorY + 65),
+                      cv::Scalar(0, 0, 0), cv::FILLED);
+        cv::rectangle(debugFrame,
+                      cv::Point(anchorX - 5, anchorY - 15),
+                      cv::Point(anchorX + 140, anchorY + 65),
+                      cv::Scalar(0, 255, 0), 1);
+
+        // Position (normalized %)
+        std::string posStr = "Pos: " + std::to_string((int)(wrist.x * 100)) + "%, "
+                                     + std::to_string((int)(wrist.y * 100)) + "%";
+        cv::putText(debugFrame, posStr, cv::Point(anchorX, handInfoY),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
+        handInfoY += smallLineHeight;
 
         // Velocity
-        std::string velStr = "Vel: (" + std::to_string((int)(_lastVelocity.x * 1000)) + ", "
-                                      + std::to_string((int)(_lastVelocity.y * 1000)) + ", "
-                                      + std::to_string((int)(_lastVelocity.z * 1000)) + ")";
-        cv::putText(debugFrame, velStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-        bottomY += lineHeight;
+        std::string velStr = "Vel: " + std::to_string((int)(_lastVelocity.x * 100)) + ", "
+                                     + std::to_string((int)(_lastVelocity.y * 100)) + ", "
+                                     + std::to_string((int)(_lastVelocity.z * 100));
+        cv::putText(debugFrame, velStr, cv::Point(anchorX, handInfoY),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 255), 1);
+        handInfoY += smallLineHeight;
 
-        // Gesture
-        if (!gestureName.empty() && gestureName != "unknown") {
-            std::string gestStr = "Gesture: " + gestureName;
-            cv::Scalar gestColor = (gestureId > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(200, 200, 200);
-            cv::putText(debugFrame, gestStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.6, gestColor, 2);
-            bottomY += lineHeight;
+        // Delta (position change from last frame)
+        float deltaX = 0, deltaY = 0, deltaZ = 0;
+        if (_hasLastState && !_lastHandState.landmarks.empty()) {
+            deltaX = wrist.x - _lastHandState.landmarks[0].x;
+            deltaY = wrist.y - _lastHandState.landmarks[0].y;
+            deltaZ = wrist.z - _lastHandState.landmarks[0].z;
+        }
+        std::string deltaStr = "Dlt: " + std::to_string((int)(deltaX * 1000)) + ", "
+                                       + std::to_string((int)(deltaY * 1000)) + ", "
+                                       + std::to_string((int)(deltaZ * 1000));
+        cv::putText(debugFrame, deltaStr, cv::Point(anchorX, handInfoY),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 200, 200), 1);
+        handInfoY += smallLineHeight;
 
-            // Pinch Distance
-            std::string pinchStr = "Pinch: " + std::to_string((int)(pinchDist * 100)) + "%";
-            cv::putText(debugFrame, pinchStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+        // Gesture (if detected)
+        if (gestureId > 0 && gestureName != "unknown") {
+            cv::putText(debugFrame, gestureName, cv::Point(anchorX, handInfoY),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+        } else {
+            cv::putText(debugFrame, "---", cv::Point(anchorX, handInfoY),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1);
         }
     }
 

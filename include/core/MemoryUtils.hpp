@@ -57,8 +57,7 @@ inline void register_buffer_cuda(void* ptr, size_t size) {
     if (err == cudaSuccess) {
         Logger::debug("Registered buffer for CUDA Zero-Copy: ", ptr, " Size: ", size);
     } else if (err == cudaErrorHostMemoryAlreadyRegistered) {
-        // Buffer already registered (e.g., from previous run), this is OK
-        Logger::debug("Buffer already registered for CUDA: ", ptr);
+        // Buffer already registered (e.g., from previous run), this is OK - no need to log
     } else {
         Logger::error("cudaHostRegister failed: ", cudaGetErrorString(err));
         // Don't throw - continue without zero-copy for this buffer
