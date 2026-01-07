@@ -102,8 +102,12 @@ bool SystemMonitor::ensureMaxPerformance() {
     Logger::warn("Setting MAXN mode...");
 
     // Use standard NVIDIA commands directly
-    system("sudo nvpmodel -m 0 2>/dev/null");
-    system("sudo jetson_clocks 2>/dev/null");
+    if(system("sudo nvpmodel -m 0 2>/dev/null") != 0) {
+        Logger::warn("Failed to set MAXN mode via execution of 'nvpmodel'.");
+    }
+    if(system("sudo jetson_clocks 2>/dev/null") != 0) {
+        Logger::warn("Failed to set clocks via execution of 'jetson_clocks'.");
+    }
 
     // Wait for changes to take effect
     std::this_thread::sleep_for(std::chrono::seconds(1));

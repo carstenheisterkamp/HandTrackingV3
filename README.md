@@ -99,7 +99,8 @@ endif ()
 
 ## 6. Performance-Setup (WICHTIG!)
 
-Damit der Jetson Orin Nano die volle Leistung (35-50 FPS) erreicht, muss er im MAXN-Modus laufen. 
+Damit der Jetson Orin Nano die volle Leistung (35-50 FPS) erreicht, muss er im MAXN-Modus laufen.
+**Hinweis für Orin Nano:** Der "MAXN" Modus heißt technisch oft **"15W"**. Das ist das physikalische Maximum (Mode 0).
 
 **Installation (einmalig):**
 Führen Sie dieses Skript aus, damit der **Hochleistungsmodus automatisch beim Booten** aktiviert wird:
@@ -110,14 +111,21 @@ sudo bash setup_performance_autostart.sh
 ```
 
 **Ergebnis:**
-- ✅ **Automatischer Start:** Der Jetson bootet immer im MAXN-Modus.
+- ✅ **Automatischer Start:** Der Jetson bootet immer im MAXN/15W-Modus.
 - ✅ **Kein Passwort:** Es ist keine manuelle Eingabe mehr nötig.
+- ✅ **GPU-Lock:** GPU wird auf maximalen Takt (624 MHz) festgenagelt.
+
+**Hardware-Details (15W Mode):**
+- **CPU:** 6x ARM Cortex-A78AE @ **1.51 GHz**
+- **GPU:** 1024 CUDA Cores (Ampere) @ **624 MHz**
+- **EMC (RAM):** LPDDR5 @ **2.1 GHz**
 
 **System prüfen:**
 ```bash
 # Zeigt CPU/GPU Clocks und Power Mode
 bash ~/dev/HandTrackingV3/scripts/diagnose_jetson.sh
 ```
+Das Diagnose-Skript bestätigt "✅ SUCCESS" wenn der 15W Modus aktiv ist.
 
 ## 7. Auto-Start der App (Optional: Produktion)
 

@@ -8,6 +8,19 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Explicitly set CUDA compiler path for Jetson
+if(NOT DEFINED CMAKE_CUDA_COMPILER)
+    set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+endif()
+set(ENV{CUDACXX} "${CMAKE_CUDA_COMPILER}")
+
+enable_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES "native")
+    endif()
+endif()
+
 find_package(OpenCV QUIET)
 if(NOT OpenCV_FOUND)
     set(OpenCV_DIR "/usr/lib/aarch64-linux-gnu/cmake/opencv4")
@@ -102,6 +115,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 add_executable(HandTrackingService src/main.cpp
+        src/core/StereoKernel.cu
         src/core/Logger.cpp
         src/core/PipelineManager.cpp
         src/core/InputLoop.cpp
@@ -111,6 +125,7 @@ add_executable(HandTrackingService src/main.cpp
         src/net/OscSender.cpp
         src/net/MjpegServer.cpp
         include/core/Logger.hpp
+        include/core/StereoKernel.hpp
         include/core/SpscQueue.hpp
         include/core/PipelineManager.hpp
         include/core/MemoryUtils.hpp

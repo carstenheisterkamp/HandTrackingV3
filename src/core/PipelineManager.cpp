@@ -142,7 +142,7 @@ void PipelineManager::createPipeline(const Config& config) {
         auto palmInput = cam->requestOutput(
             std::make_pair(128, 128),
             dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
-            dai::ImgResizeMode::STRETCH,
+            dai::ImgResizeMode::LETTERBOX,
             config.fps
         );
         palmInput->link(palmDetect->input);
@@ -156,7 +156,7 @@ void PipelineManager::createPipeline(const Config& config) {
         auto nnInput = cam->requestOutput(
             std::make_pair(224, 224),
             dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
-            dai::ImgResizeMode::STRETCH,
+            dai::ImgResizeMode::LETTERBOX,
             config.fps
         );
         nnInput->link(landmarkNN->input);

@@ -5,6 +5,7 @@
 #include <opencv2/imgproc.hpp> // For drawing
 
 #ifdef ENABLE_CUDA
+#include "core/StereoKernel.hpp" // Custom CUDA Kernel
 #include <nppi_color_conversion.h>
 #include <cuda_runtime.h>
 #endif
@@ -21,6 +22,18 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
 
     // Initialize 21 Kalman filters for hand landmarks
     _landmarkFilters.resize(21);
+
+#ifdef ENABLE_CUDA
+    // Initialize StereoBM
+    // 64 disparities, blockSize 7 is a good starting point for 640x400
+    /*
+    try {
+        _stereoBM = cv::cuda::createStereoBM(64, 7);
+    } catch(const cv::Exception& e) {
+        Logger::error("Failed to initialize CUDA StereoBM: ", e.what());
+    }
+    */
+#endif
 
     // Initialize MJPEG Server
     _mjpegServer = std::make_unique<net::MjpegServer>(8080);
@@ -87,6 +100,34 @@ constexpr float BOX_MAX_Y = 1.0f; // Image height
 // Z depth logic
 constexpr float BOX_MIN_Z = 200.0f; // 20cm
 constexpr float BOX_MAX_Z = 1500.0f; // 1.5m
+
+// Helper to map letterboxed NN coordinates back to original frame
+void unletterbox(float& x, float& y, float nnSize, float origW, float origH) {
+    if (x < 0.001f && y < 0.001f) return; // Ignore 0,0 garbage
+
+    float scale = std::min(nnSize / origW, nnSize / origH);
+    float newW = origW * scale;
+    float newH = origH * scale;
+
+    float offX = (nnSize - newW) / 2.0f;
+    float offY = (nnSize - newH) / 2.0f;
+
+    // Map normalized (0..1) to pixel on NN (0..nnSize)
+    float px = x * nnSize;
+    float py = y * nnSize;
+
+    // Remove offset
+    px -= offX;
+    py -= offY;
+
+    // Scale back to original
+    x = px / newW; // 0..1 relative to original width
+    y = py / newH; // 0..1 relative to original height
+
+    // Clamp
+    x = std::clamp(x, 0.0f, 1.0f);
+    y = std::clamp(y, 0.0f, 1.0f);
+}
 
 float normalize(float value, float min, float max) {
     return std::clamp((value - min) / (max - min), 0.0f, 1.0f);
@@ -180,12 +221,17 @@ void ProcessingLoop::processFrame(Frame* frame) {
     // we MUST gate it with the Palm Detector to avoid false positives.
     bool palmDetected = false;
     if (!frame->palmData.empty()) {
-        int numDetections = frame->palmData.size() / 7;
-        for (int i = 0; i < numDetections; ++i) {
-            float conf = frame->palmData[i * 7 + 2];
-            if (conf > 0.4f) { // Confidence threshold
-                palmDetected = true;
-                break;
+        // MediaPipe Palm Detection output stride is typically 18 per anchor
+        size_t stride = 18;
+        if (frame->palmData.size() >= stride) {
+            int numDetections = static_cast<int>(frame->palmData.size() / stride);
+            numDetections = std::min(numDetections, 20); // Cap
+            for (int i = 0; i < numDetections; ++i) {
+                float score = frame->palmData[i * stride + 0];
+                if (score > 0.5f) { // Confidence threshold
+                    palmDetected = true;
+                    break;
+                }
             }
         }
     }
@@ -224,10 +270,22 @@ void ProcessingLoop::processFrame(Frame* frame) {
     std::vector<math::KalmanFilter::Point3f> currentLandmarks;
     currentLandmarks.reserve(21);
 
-    // Filter Parameters
-    constexpr float ONE_EURO_MIN_CUTOFF = 1.0f; // Hz
-    constexpr float ONE_EURO_BETA = 0.007f;
-    constexpr float ONE_EURO_D_CUTOFF = 1.0f;
+#ifdef ENABLE_CUDA
+    // GPU Stereo Depth Computation - ONCE per frame, not per landmark!
+    if (frame->hasStereoData && frame->monoWidth > 0 && frame->monoLeftData && frame->monoRightData) {
+       computeStereoDepth(frame->monoLeftData.get(),
+                          frame->monoRightData.get(),
+                          (uint16_t*)frame->depthData.get(),
+                          static_cast<int>(frame->monoWidth),
+                          static_cast<int>(frame->monoHeight));
+
+        frame->depthWidth = frame->monoWidth;
+        frame->depthHeight = frame->monoHeight;
+
+        // Sync GPU before reading depth
+        cudaStreamSynchronize(0);
+    }
+#endif
 
     // Process each landmark
     for (int i = 0; i < 21; ++i) {
@@ -247,17 +305,14 @@ void ProcessingLoop::processFrame(Frame* frame) {
         if (rawX > 1.0f || rawY > 1.0f) {
             rawX /= 224.0f;
             rawY /= 224.0f;
-            // Z bleibt relativ (oft im Bereich -0.5 bis 0.5 oder ähnlich)
+            // Z remains relative
         }
 
-        // TODO: Compute metric depth on Jetson GPU using frame->monoLeftData/monoRightData
-        // For now, use the relative Z coordinate from the landmark model.
-        // GPU Stereo implementation would go here:
-        // if (frame->monoLeftData && frame->monoRightData && frame->monoWidth > 0) {
-        //     computeStereoDepthCUDA(frame);  // Writes to frame->depthData
-        // }
+        // Un-Letterbox: Map from 224x224 (with gray bars) back to 1920x1080 full frame
+        // This corrects the "Total Off" alignment issues.
+        unletterbox(rawX, rawY, 224.0f, (float)frame->width, (float)frame->height);
 
-        // Use computed depth if available (after GPU stereo is implemented)
+        // Use computed depth if available
         if (frame->depthData && frame->depthWidth > 0) {
             int u = std::clamp((int)(rawX * frame->depthWidth), 0, (int)frame->depthWidth - 1);
             int v = std::clamp((int)(rawY * frame->depthHeight), 0, (int)frame->depthHeight - 1);
@@ -275,7 +330,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         currentLandmarks.push_back(smoothed);
 
         // Normalize and add to result
-        TrackingResult::NormalizedPoint np;
+        TrackingResult::NormalizedPoint np = {0.0f, 0.0f, 0.0f};
         np.x = normalize(smoothed.x, BOX_MIN_X, BOX_MAX_X);
         np.y = normalize(smoothed.y, BOX_MIN_Y, BOX_MAX_Y);
         np.z = normalize(smoothed.z, BOX_MIN_Z, BOX_MAX_Z); // Metric Normalized Z
@@ -328,91 +383,124 @@ void ProcessingLoop::processFrame(Frame* frame) {
     int gestureId = 0;
 
     if (currentLandmarks.size() >= 21) {
-        auto dist = [](const math::KalmanFilter::Point3f& a, const math::KalmanFilter::Point3f& b) {
-            return std::sqrt(std::pow(a.x - b.x, 2) + std::pow(a.y - b.y, 2) + std::pow(a.z - b.z, 2));
+        auto dist2D = [](const math::KalmanFilter::Point3f& a, const math::KalmanFilter::Point3f& b) {
+            return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
         };
 
-        // Key Landmarks
+        // Key Landmarks (MediaPipe Hand Landmark indices)
+        // 0=Wrist, 1-4=Thumb(CMC,MCP,IP,TIP), 5-8=Index(MCP,PIP,DIP,TIP), etc.
         auto wrist = currentLandmarks[0];
+
+        auto thumbCmc = currentLandmarks[1];
+        auto thumbMcp = currentLandmarks[2];
+        auto thumbIp = currentLandmarks[3];
         auto thumbTip = currentLandmarks[4];
+
+        auto indexMcp = currentLandmarks[5];
+        auto indexPip = currentLandmarks[6];
+        auto indexDip = currentLandmarks[7];
         auto indexTip = currentLandmarks[8];
+
+        auto middleMcp = currentLandmarks[9];
+        auto middlePip = currentLandmarks[10];
+        auto middleDip = currentLandmarks[11];
         auto middleTip = currentLandmarks[12];
+
+        auto ringMcp = currentLandmarks[13];
+        auto ringPip = currentLandmarks[14];
+        auto ringDip = currentLandmarks[15];
         auto ringTip = currentLandmarks[16];
+
+        auto pinkyMcp = currentLandmarks[17];
+        auto pinkyPip = currentLandmarks[18];
+        auto pinkyDip = currentLandmarks[19];
         auto pinkyTip = currentLandmarks[20];
 
-        auto indexPip = currentLandmarks[6];
-        auto middlePip = currentLandmarks[10];
-        auto ringPip = currentLandmarks[14];
-        auto pinkyPip = currentLandmarks[18];
+        // Robust Finger State Detection:
+        // A finger is EXTENDED if its TIP is further from the palm center (MCP) than its PIP
+        // Using Y-coordinate comparison (smaller Y = higher on screen = extended)
+        // Note: In image coordinates, Y increases downward
 
-        // Finger States (Extended vs Folded)
-        // Heuristic: Tip is further from wrist than PIP joint = Extended
-        bool thumbOpen = dist(thumbTip, wrist) > dist(currentLandmarks[2], wrist); // Thumb is special (CMC vs IP)
-        bool indexOpen = dist(indexTip, wrist) > dist(indexPip, wrist);
-        bool middleOpen = dist(middleTip, wrist) > dist(middlePip, wrist);
-        bool ringOpen = dist(ringTip, wrist) > dist(ringPip, wrist);
-        bool pinkyOpen = dist(pinkyTip, wrist) > dist(pinkyPip, wrist);
+        // For non-thumb fingers: TIP.y < PIP.y means finger is extended (pointing up relative to palm)
+        // But this depends on hand orientation. A simpler check:
+        // Extended = TIP is further from wrist than MCP (in 2D)
+        bool indexOpen = dist2D(indexTip, wrist) > dist2D(indexMcp, wrist) * 1.3f;
+        bool middleOpen = dist2D(middleTip, wrist) > dist2D(middleMcp, wrist) * 1.3f;
+        bool ringOpen = dist2D(ringTip, wrist) > dist2D(ringMcp, wrist) * 1.3f;
+        bool pinkyOpen = dist2D(pinkyTip, wrist) > dist2D(pinkyMcp, wrist) * 1.3f;
 
-        // Pinch (Thumb Tip - Index Tip)
-        pinchDist = dist(thumbTip, indexTip);
+        // Thumb is special: check if TIP is far from index MCP (spread out)
+        bool thumbOpen = dist2D(thumbTip, indexMcp) > 0.08f;
 
-        // Fist (Average dist of tips to wrist)
-        fistDist = (dist(indexTip, wrist) + dist(middleTip, wrist) + dist(ringTip, wrist) + dist(pinkyTip, wrist)) / 4.0f;
+        // Pinch detection: Thumb Tip close to Index Tip
+        float pinchDist2D = dist2D(thumbTip, indexTip);
+        pinchDist = static_cast<float>(pinchDist2D);
 
-        // Thresholds (Normalized [0,1])
-        const float PINCH_THRESH = 0.05f;
+        // Fist detection: All tips close to palm center
+        auto palmCenter = currentLandmarks[9]; // Middle MCP as palm center
+        fistDist = (dist2D(indexTip, palmCenter) + dist2D(middleTip, palmCenter) +
+                    dist2D(ringTip, palmCenter) + dist2D(pinkyTip, palmCenter)) / 4.0f;
 
-        // Gesture Logic
-        if (!thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+        // Thresholds
+        const float PINCH_THRESH = 0.06f;
+        const float FIST_THRESH = 0.12f;
+
+        // Gesture Logic (priority order)
+        if (fistDist < FIST_THRESH && !thumbOpen) {
             gestureId = 2; gestureName = "FIST";
+        }
+        else if (pinchDist < PINCH_THRESH) {
+            if (middleOpen && ringOpen && pinkyOpen) {
+                gestureId = 1; gestureName = "OK";
+            } else {
+                gestureId = 1; gestureName = "PINCH";
+            }
         }
         else if (thumbOpen && indexOpen && middleOpen && ringOpen && pinkyOpen) {
             // Check for VULCAN (Gap between Middle and Ring)
-            float midRingDist = dist(middleTip, ringTip);
-            if (midRingDist > 0.08f) { // Heuristic gap
+            float midRingDist = dist2D(middleTip, ringTip);
+            if (midRingDist > 0.1f) {
                  gestureId = 10; gestureName = "VULCAN";
             } else {
                  gestureId = 3; gestureName = "FIVE";
             }
         }
-        else if (pinchDist < PINCH_THRESH) {
-            // Check if others are open
-            if (middleOpen && ringOpen && pinkyOpen) {
-                gestureId = 1; gestureName = "OK"; // or PINCH
+        else if (indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
+            if (thumbOpen) {
+                gestureId = 5; gestureName = "GUN"; // L-Shape / Two
             } else {
-                gestureId = 1; gestureName = "PINCH";
+                gestureId = 4; gestureName = "POINTING";
             }
         }
-        else if (!thumbOpen && indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
-            gestureId = 4; gestureName = "POINTING";
-        }
-        else if (thumbOpen && indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
-            gestureId = 5; gestureName = "TWO"; // L-Shape
-        }
-        else if (!thumbOpen && indexOpen && middleOpen && !ringOpen && !pinkyOpen) {
+        else if (indexOpen && middleOpen && !ringOpen && !pinkyOpen) {
             gestureId = 6; gestureName = "PEACE";
         }
-        else if (thumbOpen && !indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
+        else if (thumbOpen && pinkyOpen && !indexOpen && !middleOpen && !ringOpen) {
             gestureId = 7; gestureName = "CALL_ME";
         }
-        else if (!thumbOpen && indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
-            gestureId = 8; gestureName = "METAL";
-        }
-        else if (thumbOpen && indexOpen && !middleOpen && !ringOpen && pinkyOpen) {
-            gestureId = 9; gestureName = "LOVE_YOU";
+        else if (indexOpen && pinkyOpen && !middleOpen && !ringOpen) {
+            if (thumbOpen) {
+                gestureId = 9; gestureName = "LOVE_YOU";
+            } else {
+                gestureId = 8; gestureName = "METAL";
+            }
         }
         else if (thumbOpen && !indexOpen && !middleOpen && !ringOpen && !pinkyOpen) {
-            gestureId = 11; gestureName = "THUMBS_UP"; // Orientation check needed for real thumbs up
+            gestureId = 11; gestureName = "THUMBS_UP";
+        }
+        else if (middleOpen && !indexOpen && !ringOpen && !pinkyOpen) {
+            gestureId = 12; gestureName = "MIDDLE_FINGER";
         }
         else {
-            gestureName = "unknown";
+            gestureId = 0; gestureName = "---";
         }
 
         // Log Gesture occasionally
         static int gestureLogCounter = 0;
-        if (++gestureLogCounter % 30 == 0) {
-            Logger::info("Gesture: ", gestureName, " (Pinch: ", pinchDist, ")");
-            Logger::info("Fingers: T:", thumbOpen, " I:", indexOpen, " M:", middleOpen, " R:", ringOpen, " P:", pinkyOpen);
+        if (++gestureLogCounter % 60 == 0) {
+            Logger::info("Gesture: ", gestureName, " | Fingers: T:", thumbOpen,
+                         " I:", indexOpen, " M:", middleOpen, " R:", ringOpen, " P:", pinkyOpen,
+                         " | Pinch:", pinchDist, " Fist:", fistDist);
         }
     }
 
@@ -446,9 +534,19 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
         return;
     }
 
-    // === TOP LEFT: Status Info ===
-    int yPos = 25;
-    int lineHeight = 22;
+    // Helper: Draw semi-transparent rectangle
+    auto drawTransparentRect = [&](cv::Rect rect, cv::Scalar color, double alpha) {
+        cv::Mat overlay = debugFrame.clone();
+        cv::rectangle(overlay, rect, color, cv::FILLED);
+        cv::addWeighted(overlay, alpha, debugFrame, 1.0 - alpha, 0, debugFrame);
+    };
+
+    // === TOP LEFT: Status Info Box ===
+    int statusBoxHeight = 130;
+    drawTransparentRect(cv::Rect(5, 5, 280, statusBoxHeight), cv::Scalar(0, 0, 0), 0.6);
+
+    int yPos = 22;
+    int lineHeight = 20;
 
     // 1. Date & Time
     auto now = std::chrono::system_clock::now();
@@ -456,12 +554,15 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
     std::tm tm = *std::localtime(&time_t);
     char timeStr[64];
     std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
-    cv::putText(debugFrame, timeStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+    cv::putText(debugFrame, timeStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(255, 255, 255), 1);
     yPos += lineHeight;
 
-    // 2. FPS
-    std::string fpsStr = "FPS: " + std::to_string((int)_currentFps);
-    cv::putText(debugFrame, fpsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+    // 2. FPS with color coding
+    cv::Scalar fpsColor = (_currentFps >= 28) ? cv::Scalar(0, 255, 0) :
+                          (_currentFps >= 20) ? cv::Scalar(0, 255, 255) : cv::Scalar(0, 0, 255);
+    char fpsStr[32];
+    snprintf(fpsStr, sizeof(fpsStr), "FPS: %.1f", _currentFps);
+    cv::putText(debugFrame, fpsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, fpsColor, 1);
     yPos += lineHeight;
 
     // 3. System Performance (Update every 5 seconds)
@@ -477,46 +578,66 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
     // 4. Count Palm Detections (Hands)
     int numHands = 0;
     std::vector<cv::Rect> palmBoxes;
+
     if (!frame->palmData.empty()) {
-        // DEBUG: Log palm data structure once
+        // Log palm data structure once for debugging
         static bool palmDataLogged = false;
-        if (!palmDataLogged && frame->palmData.size() >= 7) {
-            Logger::info("Palm Detection Raw: size=", frame->palmData.size(),
-                         " [0]=", frame->palmData[0], " [1]=", frame->palmData[1],
-                         " [2]=", frame->palmData[2], " [3]=", frame->palmData[3],
-                         " [4]=", frame->palmData[4], " [5]=", frame->palmData[5],
-                         " [6]=", frame->palmData[6]);
+        if (!palmDataLogged && frame->palmData.size() >= 18) {
+            Logger::info("Palm Detection Raw (first 18): ");
+            for (int k = 0; k < 18 && k < (int)frame->palmData.size(); ++k) {
+                Logger::info("  [", k, "]=", frame->palmData[k]);
+            }
             palmDataLogged = true;
         }
 
-        // Palm detection output format varies by model
-        // Common formats: [x_center, y_center, w, h, conf, ...] or [conf, x1, y1, x2, y2, ...]
-        int numDetections = frame->palmData.size() / 7;
-        for (int i = 0; i < numDetections; ++i) {
-            float conf = frame->palmData[i * 7 + 2];
-            if (conf > 0.4f) {  // Confidence threshold
-                numHands++;
-                float x1 = frame->palmData[i * 7 + 3];
-                float y1 = frame->palmData[i * 7 + 4];
-                float x2 = frame->palmData[i * 7 + 5];
-                float y2 = frame->palmData[i * 7 + 6];
+        // MediaPipe Palm Detection output format (896 anchors, each with score + bbox):
+        // The blob outputs scores and bboxes separately, then combined.
+        // For simplicity, try to find high-confidence detections.
+        // Format varies, but commonly: [score, x_center, y_center, width, height, ...]
 
-                // Auto-normalize if values are in pixel coordinates (>1.0)
-                // Palm model input is 128x128
-                if (x1 > 1.0f || y1 > 1.0f || x2 > 1.0f || y2 > 1.0f) {
-                    x1 /= 128.0f;
-                    y1 /= 128.0f;
-                    x2 /= 128.0f;
-                    y2 /= 128.0f;
+        size_t stride = 18; // Typical anchor output size
+        if (frame->palmData.size() >= stride) {
+            int numDetections = static_cast<int>(frame->palmData.size() / stride);
+            numDetections = std::min(numDetections, 10); // Cap for sanity
+
+            for (int i = 0; i < numDetections; ++i) {
+                float score = frame->palmData[i * stride + 0];
+
+                if (score > 0.5f) {  // Confidence threshold
+                    numHands++;
+
+                    // Extract normalized bbox (center + size format)
+                    float cx = frame->palmData[i * stride + 1];
+                    float cy = frame->palmData[i * stride + 2];
+                    float w = frame->palmData[i * stride + 3];
+                    float h = frame->palmData[i * stride + 4];
+
+                    // Normalize if in pixel coordinates
+                    if (cx > 1.0f) cx /= 128.0f;
+                    if (cy > 1.0f) cy /= 128.0f;
+                    if (w > 1.0f) w /= 128.0f;
+                    if (h > 1.0f) h /= 128.0f;
+
+                    // Un-letterbox from 128x128 to original frame
+                    float x1 = cx - w / 2.0f;
+                    float y1 = cy - h / 2.0f;
+                    float x2 = cx + w / 2.0f;
+                    float y2 = cy + h / 2.0f;
+
+                    // Apply unletterbox transformation
+                    unletterbox(x1, y1, 128.0f, (float)frame->width, (float)frame->height);
+                    unletterbox(x2, y2, 128.0f, (float)frame->width, (float)frame->height);
+
+                    // Scale to debug frame
+                    int px1 = static_cast<int>(x1 * debugFrame.cols);
+                    int py1 = static_cast<int>(y1 * debugFrame.rows);
+                    int px2 = static_cast<int>(x2 * debugFrame.cols);
+                    int py2 = static_cast<int>(y2 * debugFrame.rows);
+
+                    if (px2 > px1 && py2 > py1) {
+                        palmBoxes.emplace_back(cv::Point(px1, py1), cv::Point(px2, py2));
+                    }
                 }
-
-                // Scale to debug frame size
-                int px1 = static_cast<int>(x1 * debugFrame.cols);
-                int py1 = static_cast<int>(y1 * debugFrame.rows);
-                int px2 = static_cast<int>(x2 * debugFrame.cols);
-                int py2 = static_cast<int>(y2 * debugFrame.rows);
-
-                palmBoxes.emplace_back(cv::Point(px1, py1), cv::Point(px2, py2));
             }
         }
     }
@@ -525,115 +646,107 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
     cv::putText(debugFrame, handsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
     yPos += lineHeight;
 
-    // 5. VIP Status (Count: 0 when searching, 1 when locked)
+    // 5. VIP Status
     int vipCount = _vipLocked ? 1 : 0;
-    std::string vipStr = "VIP: " + std::to_string(vipCount) + (_vipLocked ? " (Locked)" : " (Searching)");
+    std::string vipStr = "VIP: " + std::to_string(vipCount) + (_vipLocked ? " [LOCKED]" : " [Searching...]");
     cv::Scalar vipColor = _vipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
     cv::putText(debugFrame, vipStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, vipColor, 1);
     yPos += lineHeight;
 
     // === DRAW PALM BOUNDING BOXES ===
     for (size_t i = 0; i < palmBoxes.size(); ++i) {
-        cv::rectangle(debugFrame, palmBoxes[i], cv::Scalar(255, 0, 0), 2);
-        cv::putText(debugFrame, "Hand " + std::to_string(i + 1),
+        cv::rectangle(debugFrame, palmBoxes[i], cv::Scalar(255, 100, 0), 2);
+        cv::putText(debugFrame, "Palm " + std::to_string(i + 1),
                     cv::Point(palmBoxes[i].x, palmBoxes[i].y - 5),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 100, 0), 1);
     }
 
-    // === DRAW LANDMARKS & SKELETON + PER-HAND INFO ===
-    if (!currentLandmarks.empty()) {
-        cv::Scalar skeletonColor = (numHands > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(100, 100, 100);
-        cv::Scalar jointColor = (numHands > 0) ? cv::Scalar(0, 0, 255) : cv::Scalar(100, 100, 100);
+    // === DRAW LANDMARKS & SKELETON ===
+    if (currentLandmarks.size() >= 21) {
+        cv::Scalar skeletonColor = cv::Scalar(0, 255, 0);
+        cv::Scalar jointColor = cv::Scalar(0, 0, 255);
 
         std::vector<cv::Point> pixelLandmarks;
         pixelLandmarks.reserve(21);
 
         for (const auto& lm : currentLandmarks) {
-            int x = static_cast<int>(lm.x * frame->width);
-            int y = static_cast<int>(lm.y * frame->height);
+            int x = static_cast<int>(lm.x * static_cast<float>(frame->width));
+            int y = static_cast<int>(lm.y * static_cast<float>(frame->height));
             pixelLandmarks.emplace_back(x, y);
         }
 
-        // Draw Skeleton
+        // Draw Skeleton connections
         const std::vector<std::pair<int, int>> connections = {
             {0, 1}, {1, 2}, {2, 3}, {3, 4},         // Thumb
             {0, 5}, {5, 6}, {6, 7}, {7, 8},         // Index
             {0, 9}, {9, 10}, {10, 11}, {11, 12},    // Middle
             {0, 13}, {13, 14}, {14, 15}, {15, 16},  // Ring
             {0, 17}, {17, 18}, {18, 19}, {19, 20},  // Pinky
-            {5, 9}, {9, 13}, {13, 17}, {0, 5}, {0, 17} // Palm
+            {5, 9}, {9, 13}, {13, 17}               // Palm base
         };
 
         for (const auto& conn : connections) {
-            if (conn.first < (int)pixelLandmarks.size() && conn.second < (int)pixelLandmarks.size()) {
-                cv::line(debugFrame, pixelLandmarks[conn.first], pixelLandmarks[conn.second], skeletonColor, 2);
-            }
+            cv::line(debugFrame, pixelLandmarks[conn.first], pixelLandmarks[conn.second], skeletonColor, 2);
         }
 
-        for (const auto& pt : pixelLandmarks) {
-            cv::circle(debugFrame, pt, 4, jointColor, -1);
+        // Draw joints
+        for (size_t j = 0; j < pixelLandmarks.size(); ++j) {
+            int radius = (j == 0) ? 6 : 4; // Larger wrist
+            cv::circle(debugFrame, pixelLandmarks[j], radius, jointColor, -1);
+            cv::circle(debugFrame, pixelLandmarks[j], radius, cv::Scalar(255,255,255), 1); // White outline
         }
 
-        // === PER-HAND INFO (drawn next to the hand) ===
-        // Use wrist position as anchor point
+        // === PER-HAND INFO BOX ===
         auto wrist = currentLandmarks[0];
-        int anchorX = static_cast<int>(wrist.x * frame->width) + 20; // Offset to the right of wrist
-        int anchorY = static_cast<int>(wrist.y * frame->height) - 60; // Above wrist
+        int anchorX = static_cast<int>(wrist.x * static_cast<float>(frame->width)) + 25;
+        int anchorY = static_cast<int>(wrist.y * static_cast<float>(frame->height)) - 80;
 
         // Clamp to screen bounds
-        anchorX = std::clamp(anchorX, 10, (int)frame->width - 150);
-        anchorY = std::clamp(anchorY, 20, (int)frame->height - 80);
+        anchorX = std::clamp(anchorX, 10, static_cast<int>(frame->width) - 180);
+        anchorY = std::clamp(anchorY, 10, static_cast<int>(frame->height) - 100);
 
-        int handInfoY = anchorY;
-        int smallLineHeight = 16;
+        int boxWidth = 170;
+        int boxHeight = 90;
 
-        // Background for readability
-        cv::rectangle(debugFrame,
-                      cv::Point(anchorX - 5, anchorY - 15),
-                      cv::Point(anchorX + 140, anchorY + 65),
-                      cv::Scalar(0, 0, 0), cv::FILLED);
-        cv::rectangle(debugFrame,
-                      cv::Point(anchorX - 5, anchorY - 15),
-                      cv::Point(anchorX + 140, anchorY + 65),
-                      cv::Scalar(0, 255, 0), 1);
+        // Semi-transparent background
+        drawTransparentRect(cv::Rect(anchorX - 5, anchorY - 5, boxWidth, boxHeight), cv::Scalar(0, 0, 0), 0.7);
+        cv::rectangle(debugFrame, cv::Rect(anchorX - 5, anchorY - 5, boxWidth, boxHeight), cv::Scalar(0, 255, 0), 1);
 
-        // Position (normalized %)
-        std::string posStr = "Pos: " + std::to_string((int)(wrist.x * 100)) + "%, "
-                                     + std::to_string((int)(wrist.y * 100)) + "%";
+        int handInfoY = anchorY + 12;
+        int smallLineHeight = 18;
+
+        // Position: X, Y in normalized (0..1), Z in mm
+        char posStr[64];
+        snprintf(posStr, sizeof(posStr), "X:%.2f Y:%.2f Z:%.0fmm", wrist.x, wrist.y, wrist.z);
         cv::putText(debugFrame, posStr, cv::Point(anchorX, handInfoY),
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
         handInfoY += smallLineHeight;
 
-        // Velocity
-        std::string velStr = "Vel: " + std::to_string((int)(_lastVelocity.x * 100)) + ", "
-                                     + std::to_string((int)(_lastVelocity.y * 100)) + ", "
-                                     + std::to_string((int)(_lastVelocity.z * 100));
+        // Velocity (units per second, scaled for display)
+        char velStr[64];
+        snprintf(velStr, sizeof(velStr), "Vel: %.2f, %.2f, %.0f", _lastVelocity.x, _lastVelocity.y, _lastVelocity.z);
         cv::putText(debugFrame, velStr, cv::Point(anchorX, handInfoY),
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 255), 1);
         handInfoY += smallLineHeight;
 
-        // Delta (position change from last frame)
+        // Delta (per-frame change)
         float deltaX = 0, deltaY = 0, deltaZ = 0;
         if (_hasLastState && !_lastHandState.landmarks.empty()) {
             deltaX = wrist.x - _lastHandState.landmarks[0].x;
             deltaY = wrist.y - _lastHandState.landmarks[0].y;
             deltaZ = wrist.z - _lastHandState.landmarks[0].z;
         }
-        std::string deltaStr = "Dlt: " + std::to_string((int)(deltaX * 1000)) + ", "
-                                       + std::to_string((int)(deltaY * 1000)) + ", "
-                                       + std::to_string((int)(deltaZ * 1000));
+        char deltaStr[64];
+        snprintf(deltaStr, sizeof(deltaStr), "Dlt: %.3f, %.3f, %.1f", deltaX, deltaY, deltaZ);
         cv::putText(debugFrame, deltaStr, cv::Point(anchorX, handInfoY),
                     cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 200, 200), 1);
         handInfoY += smallLineHeight;
 
-        // Gesture (if detected)
-        if (gestureId > 0 && gestureName != "unknown") {
-            cv::putText(debugFrame, gestureName, cv::Point(anchorX, handInfoY),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
-        } else {
-            cv::putText(debugFrame, "---", cv::Point(anchorX, handInfoY),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(150, 150, 150), 1);
-        }
+        // Gesture with color
+        cv::Scalar gestureColor = (gestureId > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(150, 150, 150);
+        std::string gestureDisplay = (gestureId > 0) ? gestureName : "---";
+        cv::putText(debugFrame, gestureDisplay, cv::Point(anchorX, handInfoY),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, gestureColor, 1);
     }
 
     _mjpegServer->update(debugFrame);

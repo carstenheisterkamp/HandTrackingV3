@@ -46,7 +46,7 @@
     - *Status:* Implemented in `ProcessingLoop` based on finger joint angles/distances.
 - [x] **Filtering System**
     - [x] Kalman Filter (Position).
-    - [ ] One-Euro Filter (Jitter reduction). *Note: Implemented class, but rotation logic pending.*
+    - [x] One-Euro Filter (Jitter reduction). *Verified: Implemented in core/ProcessingLoop.*
 
 ## Phase 4: Networking & OSC
 - [x] **Liblo Integration**
@@ -64,17 +64,22 @@
     - *Task:* HTTP Stream with visual overlay (Skeleton, BBox, Gestures).
     - *Priority:* **High** (Essential for tuning).
     - *Status:* Implemented MjpegServer and overlay in ProcessingLoop.
+- [x] **Correction of Alignment/Aspect Ratio**
+    - *Task:* Fix "Total Off" skeleton alignment due to STRETCH resizing.
+    - *Status (2026-01-07):* Switched pipeline to `LETTERBOX` resize mode. Implemented `unletterbox()` helper to map padded coordinates back to original frame logic.
 - [x] **Stereo Depth Integration (Jetson GPU) - Infrastructure**
     - *Task:* Stream Mono L/R from OAK-D to Jetson.
     - *Status (2026-01-07):* Mono L/R cameras added to pipeline, synced with RGB/NN outputs. Frame structure extended with hasStereoData flag. Data copied to pinned memory in InputLoop.
-    - *Next:* Implement CUDA Stereo Matching kernel in ProcessingLoop.
-- [ ] **Stereo Depth Computation (CUDA Kernel)**
+    - *Next:* verify real-world performance.
+- [x] **Stereo Depth Computation (CUDA Kernel)**
     - *Task:* Implement GPU-based stereo matching (e.g., Block Matching or SGM) on Jetson.
+    - *Status:* Implemented custom CUDA Kernel (`StereoKernel.cu`) for high-performance Block Matching on Orin Nano (replacing missing OpenCV CUDA module).
     - *Priority:* **Medium** (Enhancement for absolute Z coordinates).
 - [ ] **Performance Monitor**
-    - *Task:* Measure Glass-to-OSC latency.
-- [ ] **Systemd Integration**
+    - *Task:* Measure Glass-to-OSC latency (Latency from photon capture to network packet output).
+- [x] **Systemd Integration**
     - *Task:* Create service file with Realtime priorities.
+    - *Status:* Implemented in `scripts/hand-tracking.service`.
 - [ ] **Final Profiling**
     - *Task:* Verify CPU < 10% and Latency < 30ms.
 - [ ] **Configuration System**
@@ -83,7 +88,14 @@
 ---
 
 ## Change Log / Decisions
-- **2026-01-07**:
+- **2026-01-08**:
+  - **Stereo Depth (Custom CUDA):** Implemented `src/core/StereoKernel.cu` - a raw CUDA implementation of Block Matching (SAD). This bypasses the need for `opencv_cuda` (which is missing on standard Jetpack) and provides high-performance depth averaging on the Orin GPU.
+  - **Gesture Recognition V2:** Completely rewrote gesture logic to use robust 2D-distance heuristics (Tip-to-Wrist vs. MCP-to-Wrist) instead of flawed 3D distance checks.
+- **2026-01-07 (PM)**:
+  - **CRITICAL FIX**: Fixed "Total Off" tracking alignment. Switched OAK Pipeline resize mode from `STRETCH` (distorted 16:9->1:1) to `LETTERBOX` (pads with black bars). Added `unletterbox` logic in host C++ to map coordinates back correctly.
+  - **Performance Verification**: Confirmed Jetson Orin Nano is in 15W Mode (MAXN for this device). GPU clocks locked at 624MHz.
+  - **Diagnostics**: `diagnose_jetson.sh` rewritten to correctly identify Orin Nano's "15W" mode as Maximum Performance.
+- **2026-01-07 (AM)**:
   - **Mono L/R Cameras** added to pipeline for GPU-based stereo depth (streaming infrastructure complete).
   - **GPU Frequency Detection** improved with multiple fallback paths including tegrastats parsing.
   - **Performance Scripts** updated: jetson_max_performance.sh and setup_sudoers.sh rewritten for Orin Nano.
