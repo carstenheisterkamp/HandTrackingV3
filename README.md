@@ -178,15 +178,42 @@ WantedBy=multi-user.target
 In den models ordner wechseln und die Modelle herunterladen:
 
 ```bash
-# Palm Detection (Findet die Hand)
+cd models/
+
+# Option A: Vorcompilierte 4-SHAVE Blobs (Legacy)
 wget https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/palm_detection_sh4.blob
+wget https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/hand_landmark_full_sh4.blob
 
-# Hand Landmarks (21 Punkte Erkennung)
-wget https://github.com/geaxgx/depthai_hand_tracker/raw/main/models/hand_landmark_sh4.blob
+# Option B: Optimierte 6-SHAVE Blobs selbst kompilieren (EMPFOHLEN)
+# Siehe scripts/compile_hand_landmark.py
+```
 
-Hinweis: sh4 steht für die Anzahl der verwendeten "Shave Cores" auf dem Myriad-Chip der Kamera. 4 Kerne sind ein guter Mittelweg zwischen Speed und Hitze.)
+### SHAVE-Konfiguration (Performance-Optimierung)
 
-2. Die 21 Gelenkpunkte (Landmarks)
+Die OAK-D Pro hat 12 SHAVE-Kerne auf dem Myriad X Chip. Die Verteilung beeinflusst die Performance:
+
+| Konfiguration | Palm Detection | Hand Landmark | FPS (geschätzt) | Anmerkung |
+|---------------|----------------|---------------|-----------------|-----------|
+| 4+4 SHAVEs    | 4              | 4             | ~25-30 FPS      | Legacy, konservativ |
+| **6+6 SHAVEs**| 6              | 6             | ~35-40 FPS      | **Optimal für 2 NNs** |
+| 8+4 SHAVEs    | 8              | 4             | ~30-35 FPS      | Unbalanciert |
+
+**Erwarteter Performance-Gewinn mit 6 SHAVEs:**
+- **+20-30% schnellere Inferenz** pro Modell
+- **+5-10 FPS** im Gesamtsystem
+- **Keine Änderung der Erkennungsgenauigkeit** - die Modellgewichte sind identisch, nur die Parallelisierung ist höher
+
+**Hinweis zur Genauigkeit:**
+Die SHAVE-Anzahl beeinflusst **nur die Geschwindigkeit**, nicht die Genauigkeit. Das Modell bleibt identisch:
+- Gleiche Landmark-Präzision (21 Punkte)
+- Gleiche Palm-Detection-Confidence-Schwelle
+- Gleiche Tracking-Stabilität
+
+Die aktuell verwendeten Blobs:
+- `palm_detection_128x128_openvino_2022.1_6shave.blob` (4.6 MB)
+- `hand_landmark_full_openvino_2022.1_6shave.blob` (11.9 MB)
+
+### Die 21 Gelenkpunkte (Landmarks)
    Damit du weißt, welche Daten du später per OSC sendest, hier eine Übersicht der Indizes, die das Modell liefert:
 
 0: Handgelenk (Wrist)

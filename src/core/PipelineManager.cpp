@@ -132,9 +132,9 @@ void PipelineManager::createPipeline(const Config& config) {
     if (!config.nnPath.empty()) {
         Logger::info("Creating Hand Tracking Pipeline (Palm + Landmarks)...");
 
-        // 1. Palm Detection Node
+        // 1. Palm Detection Node (6 SHAVEs)
         auto palmDetect = pipeline_->create<dai::node::NeuralNetwork>();
-        palmDetect->setBlobPath("models/palm_detection_sh4.blob");
+        palmDetect->setBlobPath("models/palm_detection_128x128_openvino_2022.1_6shave.blob");
         palmDetect->setNumInferenceThreads(2);  // Optimal per device recommendation
 
         auto palmInput = cam->requestOutput(

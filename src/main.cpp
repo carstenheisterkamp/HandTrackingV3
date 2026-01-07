@@ -46,7 +46,7 @@ int main() {
             config.ispScaleDenom = 3; // 1080p -> 360p (Preview)
             config.previewWidth = 640;
             config.previewHeight = 360;
-            config.nnPath = "models/hand_landmark_full_sh4.blob";
+            config.nnPath = "models/hand_landmark_full_openvino_2022.1_6shave.blob";
             config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
 
             // 3. Init & Start Pipeline
