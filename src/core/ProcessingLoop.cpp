@@ -195,10 +195,8 @@ void ProcessingLoop::processFrame(Frame* frame) {
              for(auto& kf : _landmarkFilters) kf.reset();
         }
 
-        if (!debugFrame.empty()) {
-            cv::putText(debugFrame, "No Palm Detected", cv::Point(20, 40), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(0, 0, 255), 2);
-            _mjpegServer->update(debugFrame);
-        }
+        // Draw debug overlay and return early
+        drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
         return;
     }
 
@@ -208,7 +206,8 @@ void ProcessingLoop::processFrame(Frame* frame) {
         if (warnCounter++ % 300 == 0) {
            Logger::warn("ProcessingLoop: Invalid NN data size: ", frame->nnData.size(), " (Expected 63)");
         }
-        // If we have no valid landmarks, we can't track.
+        // Draw debug overlay and return early
+        drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
         return;
     }
 
@@ -388,63 +387,86 @@ void ProcessingLoop::processFrame(Frame* frame) {
         }
     }
 
-    // Draw Debug Info
-    if (_mjpegServer && !debugFrame.empty()) {
-        // === TOP LEFT: Status Info ===
-        int yPos = 25;
-        int lineHeight = 22;
+    // Draw Debug Overlay (always, even if no hands detected)
+    drawDebugOverlay(debugFrame, frame, currentLandmarks, gestureName, gestureId, pinchDist);
 
-        // 1. Date & Time
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm tm = *std::localtime(&time_t);
-        char timeStr[64];
-        std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
-        cv::putText(debugFrame, timeStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-        yPos += lineHeight;
+    // Update result for OSC
+    result.vipLocked = _vipLocked;
+    result.timestamp = frame->timestamp;
+    result.pinchDistance = pinchDist;
+    result.gestureId = gestureId;
+    result.gestureName = gestureName;
+    // Landmarks were already pushed to result.landmarks in the loop above
 
-        // 2. FPS
-        std::string fpsStr = "FPS: " + std::to_string((int)_currentFps);
-        cv::putText(debugFrame, fpsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
-        yPos += lineHeight;
+    if (!_oscQueue->try_push(result)) {
+        // Queue full -> Drop newest (Backpressure)
+        // Logger::warn("ProcessingLoop: OSC Queue full, dropping result.");
+    }
+}
 
-        // 3. Count Palm Detections (Hands)
-        int numHands = 0;
-        std::vector<cv::Rect> palmBoxes;
-        if (!frame->palmData.empty()) {
-            int numDetections = frame->palmData.size() / 7;
-            for (int i = 0; i < numDetections; ++i) {
-                float conf = frame->palmData[i * 7 + 2];
-                if (conf > 0.5f) {
-                    numHands++;
-                    float x1 = frame->palmData[i * 7 + 3] * debugFrame.cols;
-                    float y1 = frame->palmData[i * 7 + 4] * debugFrame.rows;
-                    float x2 = frame->palmData[i * 7 + 5] * debugFrame.cols;
-                    float y2 = frame->palmData[i * 7 + 6] * debugFrame.rows;
-                    palmBoxes.emplace_back(cv::Point(x1, y1), cv::Point(x2, y2));
-                }
+void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
+                                      const std::vector<math::KalmanFilter::Point3f>& currentLandmarks,
+                                      const std::string& gestureName, int gestureId, float pinchDist) {
+    if (!_mjpegServer || debugFrame.empty()) {
+        return;
+    }
+
+    // === TOP LEFT: Status Info ===
+    int yPos = 25;
+    int lineHeight = 22;
+
+    // 1. Date & Time
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm = *std::localtime(&time_t);
+    char timeStr[64];
+    std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
+    cv::putText(debugFrame, timeStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+    yPos += lineHeight;
+
+    // 2. FPS
+    std::string fpsStr = "FPS: " + std::to_string((int)_currentFps);
+    cv::putText(debugFrame, fpsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+    yPos += lineHeight;
+
+    // 3. Count Palm Detections (Hands)
+    int numHands = 0;
+    std::vector<cv::Rect> palmBoxes;
+    if (!frame->palmData.empty()) {
+        int numDetections = frame->palmData.size() / 7;
+        for (int i = 0; i < numDetections; ++i) {
+            float conf = frame->palmData[i * 7 + 2];
+            if (conf > 0.5f) {
+                numHands++;
+                float x1 = frame->palmData[i * 7 + 3] * debugFrame.cols;
+                float y1 = frame->palmData[i * 7 + 4] * debugFrame.rows;
+                float x2 = frame->palmData[i * 7 + 5] * debugFrame.cols;
+                float y2 = frame->palmData[i * 7 + 6] * debugFrame.rows;
+                palmBoxes.emplace_back(cv::Point(x1, y1), cv::Point(x2, y2));
             }
         }
+    }
 
-        std::string handsStr = "Hands: " + std::to_string(numHands);
-        cv::putText(debugFrame, handsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
-        yPos += lineHeight;
+    std::string handsStr = "Hands: " + std::to_string(numHands);
+    cv::putText(debugFrame, handsStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1);
+    yPos += lineHeight;
 
-        // 4. VIP Status
-        std::string vipStr = _vipLocked ? "VIP: LOCKED" : "VIP: Tracking...";
-        cv::Scalar vipColor = _vipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 255, 255);
-        cv::putText(debugFrame, vipStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, vipColor, 1);
-        yPos += lineHeight;
+    // 4. VIP Status
+    std::string vipStr = _vipLocked ? "VIP: LOCKED" : "VIP: Searching...";
+    cv::Scalar vipColor = _vipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
+    cv::putText(debugFrame, vipStr, cv::Point(10, yPos), cv::FONT_HERSHEY_SIMPLEX, 0.5, vipColor, 1);
+    yPos += lineHeight;
 
-        // === DRAW PALM BOUNDING BOXES ===
-        for (size_t i = 0; i < palmBoxes.size(); ++i) {
-            cv::rectangle(debugFrame, palmBoxes[i], cv::Scalar(255, 0, 0), 2);
-            cv::putText(debugFrame, "Hand " + std::to_string(i + 1),
-                        cv::Point(palmBoxes[i].x, palmBoxes[i].y - 5),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
-        }
+    // === DRAW PALM BOUNDING BOXES ===
+    for (size_t i = 0; i < palmBoxes.size(); ++i) {
+        cv::rectangle(debugFrame, palmBoxes[i], cv::Scalar(255, 0, 0), 2);
+        cv::putText(debugFrame, "Hand " + std::to_string(i + 1),
+                    cv::Point(palmBoxes[i].x, palmBoxes[i].y - 5),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
+    }
 
-        // === DRAW LANDMARKS & SKELETON ===
+    // === DRAW LANDMARKS & SKELETON ===
+    if (!currentLandmarks.empty()) {
         cv::Scalar skeletonColor = (numHands > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(100, 100, 100);
         cv::Scalar jointColor = (numHands > 0) ? cv::Scalar(0, 0, 255) : cv::Scalar(100, 100, 100);
 
@@ -467,37 +489,35 @@ void ProcessingLoop::processFrame(Frame* frame) {
             {5, 9}, {9, 13}, {13, 17}, {0, 5}, {0, 17} // Palm
         };
 
-        if (numHands > 0) {
-            for (const auto& conn : connections) {
-                if (conn.first < (int)pixelLandmarks.size() && conn.second < (int)pixelLandmarks.size()) {
-                    cv::line(debugFrame, pixelLandmarks[conn.first], pixelLandmarks[conn.second], skeletonColor, 2);
-                }
-            }
-
-            for (const auto& pt : pixelLandmarks) {
-                cv::circle(debugFrame, pt, 4, jointColor, -1);
+        for (const auto& conn : connections) {
+            if (conn.first < (int)pixelLandmarks.size() && conn.second < (int)pixelLandmarks.size()) {
+                cv::line(debugFrame, pixelLandmarks[conn.first], pixelLandmarks[conn.second], skeletonColor, 2);
             }
         }
 
+        for (const auto& pt : pixelLandmarks) {
+            cv::circle(debugFrame, pt, 4, jointColor, -1);
+        }
+
         // === BOTTOM LEFT: Hand Details ===
-        if (numHands > 0 && !currentLandmarks.empty()) {
-            int bottomY = debugFrame.rows - 100;
+        int bottomY = debugFrame.rows - 100;
 
-            // Position (Wrist = Landmark 0)
-            auto wrist = currentLandmarks[0];
-            std::string posStr = "Pos: (" + std::to_string((int)(wrist.x * 100)) + "%, "
-                                          + std::to_string((int)(wrist.y * 100)) + "%)";
-            cv::putText(debugFrame, posStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-            bottomY += lineHeight;
+        // Position (Wrist = Landmark 0)
+        auto wrist = currentLandmarks[0];
+        std::string posStr = "Pos: (" + std::to_string((int)(wrist.x * 100)) + "%, "
+                                      + std::to_string((int)(wrist.y * 100)) + "%)";
+        cv::putText(debugFrame, posStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+        bottomY += lineHeight;
 
-            // Velocity
-            std::string velStr = "Vel: (" + std::to_string((int)(_lastVelocity.x * 1000)) + ", "
-                                          + std::to_string((int)(_lastVelocity.y * 1000)) + ", "
-                                          + std::to_string((int)(_lastVelocity.z * 1000)) + ")";
-            cv::putText(debugFrame, velStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-            bottomY += lineHeight;
+        // Velocity
+        std::string velStr = "Vel: (" + std::to_string((int)(_lastVelocity.x * 1000)) + ", "
+                                      + std::to_string((int)(_lastVelocity.y * 1000)) + ", "
+                                      + std::to_string((int)(_lastVelocity.z * 1000)) + ")";
+        cv::putText(debugFrame, velStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+        bottomY += lineHeight;
 
-            // Gesture
+        // Gesture
+        if (!gestureName.empty() && gestureName != "unknown") {
             std::string gestStr = "Gesture: " + gestureName;
             cv::Scalar gestColor = (gestureId > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(200, 200, 200);
             cv::putText(debugFrame, gestStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.6, gestColor, 2);
@@ -506,27 +526,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
             // Pinch Distance
             std::string pinchStr = "Pinch: " + std::to_string((int)(pinchDist * 100)) + "%";
             cv::putText(debugFrame, pinchStr, cv::Point(10, bottomY), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
-        } else {
-            // No hand detected
-            cv::putText(debugFrame, "No hand detected", cv::Point(10, debugFrame.rows - 30),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(128, 128, 128), 1);
         }
-
-        _mjpegServer->update(debugFrame);
     }
 
-    // Update result for OSC
-    result.vipLocked = _vipLocked;
-    result.timestamp = frame->timestamp;
-    result.pinchDistance = pinchDist;
-    result.gestureId = gestureId;
-    result.gestureName = gestureName;
-    // Landmarks were already pushed to result.landmarks in the loop above
-
-    if (!_oscQueue->try_push(result)) {
-        // Queue full -> Drop newest (Backpressure)
-        // Logger::warn("ProcessingLoop: OSC Queue full, dropping result.");
-    }
+    _mjpegServer->update(debugFrame);
 }
 
 } // namespace core

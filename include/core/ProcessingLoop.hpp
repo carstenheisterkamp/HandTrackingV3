@@ -4,6 +4,7 @@
 #include <thread>
 #include <memory>
 #include <vector>
+#include <opencv2/opencv.hpp>
 
 #include "Types.hpp"
 #include "Logger.hpp"
@@ -27,6 +28,9 @@ public:
 private:
     void loop();
     void processFrame(Frame* frame);
+    void drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
+                          const std::vector<math::KalmanFilter::Point3f>& currentLandmarks,
+                          const std::string& gestureName, int gestureId, float pinchDist);
 
     struct HandState {
         std::vector<math::KalmanFilter::Point3f> landmarks;
