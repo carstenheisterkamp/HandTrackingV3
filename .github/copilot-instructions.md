@@ -79,6 +79,18 @@ Keep this short reference at hand — it captures the device features and the en
 * **Data-Centric Flow:** Implement workflows based on v3 `Message` types. Prefer direct metadata manipulation on the device.
 * **Pipeline Dynamics:** Leverage v3 capabilities to reconfigure pipeline parts (e.g., VIP switching) at runtime without device resets.
 
+## 📝 Documentation Standards
+
+* **NO new .md files without explicit approval:** The `docs/` folder must stay clean and focused. Only create new documentation files if the user explicitly requests it.
+* **Existing docs structure:** 
+  - `OPTIMAL_WORKFLOW_V2_FINAL.md` - The architecture (frozen)
+  - `OPTIMAL_WORKFLOW_V2_REVIEW.md` - The review (frozen)
+  - `TODO.md` - Daily work plan (active)
+  - `README.md` - Navigation (stable)
+  - `OSC_GESTURE_REFERENCE.md` - Protocol reference (stable)
+* **Update existing files instead:** If you need to document something, update `TODO.md` or ask where to put it.
+* **No analysis/review files:** Don't create GAP_ANALYSIS.md, REVIEW.md, SUMMARY.md, etc. without explicit request.
+
 ## 🚀 Performance & Real-Time (C++17)
 
 * **Memory Alignment:** Enforce strict memory alignment for Jetson. Use `std::aligned_alloc` for buffers shared between CPU and GPU.

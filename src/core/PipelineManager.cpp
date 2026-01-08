@@ -114,13 +114,15 @@ void PipelineManager::createPipeline(const Config& config) {
         config.fps
     );
 
-    // AUTO MODE - Let camera handle focus and exposure automatically
-    // Manual settings caused overexposure and FPS drops
+    // AUTO MODE with Exposure Limit (Phase 0 Optimization)
+    // Limit exposure to guarantee 30+ FPS even in dark rooms
     cam->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::CONTINUOUS_VIDEO);
     cam->initialControl.setAutoExposureEnable();
+    cam->initialControl.setAutoExposureLimit(33000); // Max 33ms = 1/30s (guarantees 30 FPS)
+    cam->initialControl.setAutoExposureCompensation(1); // Slightly brighter to compensate
     cam->initialControl.setAutoWhiteBalanceMode(dai::CameraControl::AutoWhiteBalanceMode::AUTO);
 
-    Logger::info("Camera config: AUTO mode (Focus/Exposure/WB)");
+    Logger::info("Camera config: AUTO mode with 33ms Exposure Limit (guarantees 30+ FPS)");
 
     // Preview output for visualization
     auto rgbOutput = cam->requestOutput(

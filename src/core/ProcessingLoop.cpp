@@ -147,9 +147,12 @@ void ProcessingLoop::processFrame(Frame* frame) {
     // Access frame->data for pixel data (NV12)
     // Access frame->width, frame->height, etc.
 
-    // Prepare Debug Frame (RGB)
+    // Prepare Debug Frame (RGB) - ONLY if MJPEG clients are connected
+    // PHASE 0 OPTIMIZATION: Skip expensive color conversion when no viewers
     cv::Mat debugFrame;
-    if (_mjpegServer) {
+    bool shouldRenderDebug = _mjpegServer && _mjpegServer->hasClients();
+
+    if (shouldRenderDebug) {
         // Ensure BGR buffer is allocated and registered
         size_t requiredSize = frame->width * frame->height * 3;
         if (!_bgrBuffer || _bgrBufferSize < requiredSize || _bgrWidth != frame->width || _bgrHeight != frame->height) {
@@ -201,14 +204,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 debugFrame = cv::Mat((int)frame->height, (int)frame->width, CV_8UC3, _bgrBuffer.get());
             } else {
                 Logger::error("NPP Color Conversion failed: ", status, " Type: ", frame->type);
-                Logger::error("CRITICAL: GPU color conversion failed - skipping frame to maintain FPS");
-                // Frame will be released by caller (loop())
-                return;
+                // Don't return - continue processing without debug overlay
+                shouldRenderDebug = false;
             }
         } else {
             Logger::error("CUDA device pointers NULL - check CUDA registration!");
-            // Frame will be released by caller (loop())
-            return;
+            // Don't return - continue processing without debug overlay
+            shouldRenderDebug = false;
         }
 #else
         // NO CUDA - Use CPU (will be slow)
@@ -217,9 +219,8 @@ void ProcessingLoop::processFrame(Frame* frame) {
 #endif
 
         if (debugFrame.empty()) {
-            Logger::error("CRITICAL: debugFrame is empty after color conversion!");
-            // Frame will be released by caller (loop())
-            return;
+            Logger::warn("Debug frame empty - skipping overlay");
+            shouldRenderDebug = false;
         }
     }
 
@@ -258,8 +259,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
              for(auto& kf : _landmarkFilters) kf.reset();
         }
 
-        // Draw debug overlay and return early
-        drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
+        // Draw debug overlay and return early (only if clients connected)
+        if (shouldRenderDebug) {
+            drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
+        }
         return;
     }
 
@@ -269,8 +272,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
         if (warnCounter++ % 300 == 0) {
            Logger::warn("ProcessingLoop: Invalid NN data size: ", frame->nnData.size(), " (Expected 63)");
         }
-        // Draw debug overlay and return early
-        drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
+        // Draw debug overlay and return early (only if clients connected)
+        if (shouldRenderDebug) {
+            drawDebugOverlay(debugFrame, frame, {}, "", 0, 0.0f);
+        }
         return;
     }
 
@@ -283,8 +288,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
     currentLandmarks.reserve(21);
 
 #ifdef ENABLE_CUDA
-    // GPU Stereo Depth Computation - ENABLED for accurate Z-coordinates
-    if (frame->hasStereoData && frame->monoWidth > 0 && frame->monoLeftData && frame->monoRightData) {
+    // GPU Stereo Depth Computation - THROTTLED for performance (Phase 0)
+    // Depth changes slower than hand position, so compute every 3rd frame
+    static int stereoCounter = 0;
+    if (++stereoCounter % 3 == 0 && frame->hasStereoData && frame->monoWidth > 0 && frame->monoLeftData && frame->monoRightData) {
        computeStereoDepth(frame->monoLeftData.get(),
                           frame->monoRightData.get(),
                           (uint16_t*)frame->depthData.get(),
@@ -297,6 +304,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         // Sync GPU before reading depth
         cudaStreamSynchronize(0);
     }
+    // Use cached depth for frames where we didn't compute
 #endif
 
     // Process each landmark
@@ -520,8 +528,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
         }
     }
 
-    // Draw Debug Overlay (always, even if no hands detected)
-    drawDebugOverlay(debugFrame, frame, currentLandmarks, gestureName, gestureId, pinchDist);
+    // Draw Debug Overlay (only if clients connected)
+    if (shouldRenderDebug) {
+        drawDebugOverlay(debugFrame, frame, currentLandmarks, gestureName, gestureId, pinchDist);
+    }
 
     // If no landmarks were found or valid, return now, but after drawing the overlay.
     // This allows the user to see the video and palm boxes even if landmarks fail.
