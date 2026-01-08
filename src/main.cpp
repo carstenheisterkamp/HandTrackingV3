@@ -49,11 +49,11 @@ int main() {
 
             // 2. Configuration
             core::PipelineManager::Config config;
-            config.fps = 60.0f;  // Maximale FPS für beste Performance
+            config.fps = 30.0f;  // Target 30 FPS
             config.ispScaleNum = 1;
-            config.ispScaleDenom = 3; // 1080p -> 360p (Preview)
-            config.previewWidth = 640;
-            config.previewHeight = 360;
+            config.ispScaleDenom = 3; // 1080p -> 360p (SMALL preview for less bandwidth)
+            config.previewWidth = 640;  // REDUCED from 960
+            config.previewHeight = 360; // REDUCED from 540
             config.nnPath = "models/hand_landmark_full_sh4.blob";
             config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
 
@@ -93,12 +93,27 @@ int main() {
             oscSender.stop();
             pipelineManager->stop();
 
+            // Explicitly release shared pointers to force destruction of DepthAI objects
+            // before the delay and next iteration.
+            // This ensures the XLink connection is fully closed by the destructor.
+            // (inputLoop holds a shared_ptr to pipelineManager)
+            // We are at the end of the scope so they would be destroyed anyway,
+            // but doing it before the sleep is safer.
+            // Since they are stack objects here, we can't 'reset' them easily if they aren't pointers
+            // except by exiting the scope.
+            // But main variables are pointers? No...
+            // pipelineManager is shared_ptr. frames/queues are shared_ptr.
+            // inputLoop, oscSender, processingLoop are stack objects.
+
+            // To be 100% sure, we can rely on the scope exit, but let's make sure
+            // pipelineManager->stop() did the heavy lifting (clearing device_).
+
             if (!g_running) {
                 break; // Exit outer loop if user requested shutdown
             }
 
-            core::Logger::info("Restarting in 2 seconds...");
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            core::Logger::info("Restarting in 5 seconds...");
+            std::this_thread::sleep_for(std::chrono::seconds(5));
 
         } catch (const std::exception& e) {
             core::Logger::error("Fatal error in service loop: ", e.what());

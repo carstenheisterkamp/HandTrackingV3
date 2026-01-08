@@ -201,18 +201,25 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 debugFrame = cv::Mat((int)frame->height, (int)frame->width, CV_8UC3, _bgrBuffer.get());
             } else {
                 Logger::error("NPP Color Conversion failed: ", status, " Type: ", frame->type);
+                Logger::error("CRITICAL: GPU color conversion failed - skipping frame to maintain FPS");
+                // Frame will be released by caller (loop())
+                return;
             }
+        } else {
+            Logger::error("CUDA device pointers NULL - check CUDA registration!");
+            // Frame will be released by caller (loop())
+            return;
         }
+#else
+        // NO CUDA - Use CPU (will be slow)
+        cv::Mat nv12(frame->height * 3 / 2, frame->width, CV_8UC1, frame->data.get());
+        cv::cvtColor(nv12, debugFrame, cv::COLOR_YUV2BGR_NV12);
 #endif
 
         if (debugFrame.empty()) {
-            // CPU Fallback - FORCE NV12 conversion if frame matches NV12 size
-            // This fixes the "Green/Purple" issue if type flag is wrong
-            size_t expectedSizeNV12 = frame->width * frame->height * 3 / 2;
-
-             // Default NV12
-             cv::Mat nv12(frame->height * 3 / 2, frame->width, CV_8UC1, frame->data.get());
-             cv::cvtColor(nv12, debugFrame, cv::COLOR_YUV2BGR_NV12);
+            Logger::error("CRITICAL: debugFrame is empty after color conversion!");
+            // Frame will be released by caller (loop())
+            return;
         }
     }
 
@@ -227,8 +234,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
             int numDetections = static_cast<int>(frame->palmData.size() / stride);
             numDetections = std::min(numDetections, 20); // Cap
             for (int i = 0; i < numDetections; ++i) {
-                float score = frame->palmData[i * stride + 0];
-                if (score > 0.5f) { // Confidence threshold
+                float rawScore = frame->palmData[i * stride + 0];
+
+                // CRITICAL FIX: Blob outputs RAW LOGITS (negative values like -14.0)
+                // Apply sigmoid to convert to probability [0, 1]
+                float score = 1.0f / (1.0f + std::exp(-rawScore));
+
+                if (score > 0.8f) { // Confidence threshold increased to 0.8 (was 0.5) to avoid false positives
                     palmDetected = true;
                     break;
                 }
@@ -271,7 +283,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
     currentLandmarks.reserve(21);
 
 #ifdef ENABLE_CUDA
-    // GPU Stereo Depth Computation - ONCE per frame, not per landmark!
+    // GPU Stereo Depth Computation - ENABLED for accurate Z-coordinates
     if (frame->hasStereoData && frame->monoWidth > 0 && frame->monoLeftData && frame->monoRightData) {
        computeStereoDepth(frame->monoLeftData.get(),
                           frame->monoRightData.get(),
@@ -297,19 +309,23 @@ void ProcessingLoop::processFrame(Frame* frame) {
         static bool landmarkValuesLogged = false;
         if (!landmarkValuesLogged && i == 0) {
             Logger::info("Raw Landmark 0 (Wrist): X=", rawX, " Y=", rawY, " Z=", rawZ);
+            Logger::info("Frame size: ", frame->width, "x", frame->height);
             landmarkValuesLogged = true;
         }
 
-        // Auto-normalize if values are in pixel coordinates (0-224) instead of (0-1)
-        // The hand_landmark model outputs in pixel space of the input (224x224)
+        // CRITICAL: Hand Landmark model outputs PIXEL coordinates (0-224)
+        // NOT normalized! We need to normalize to (0-1) range
+        // BUT: Model was fed LETTERBOXED 224x224 from 1920x1080
+        // So we need to map: 224x224 letterbox → 1920x1080 original
+
+        // Step 1: Normalize from pixels to 0-1 relative to 224x224
         if (rawX > 1.0f || rawY > 1.0f) {
             rawX /= 224.0f;
             rawY /= 224.0f;
-            // Z remains relative
         }
 
-        // Un-Letterbox: Map from 224x224 (with gray bars) back to 1920x1080 full frame
-        // This corrects the "Total Off" alignment issues.
+        // Step 2: Unletterbox - map from 224x224 (letterboxed) back to original aspect ratio
+        // ImageManip used LETTERBOX mode to fit 1920x1080 into 224x224
         unletterbox(rawX, rawY, 224.0f, (float)frame->width, (float)frame->height);
 
         // Use computed depth if available
@@ -424,13 +440,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
         // For non-thumb fingers: TIP.y < PIP.y means finger is extended (pointing up relative to palm)
         // But this depends on hand orientation. A simpler check:
         // Extended = TIP is further from wrist than MCP (in 2D)
-        bool indexOpen = dist2D(indexTip, wrist) > dist2D(indexMcp, wrist) * 1.3f;
-        bool middleOpen = dist2D(middleTip, wrist) > dist2D(middleMcp, wrist) * 1.3f;
-        bool ringOpen = dist2D(ringTip, wrist) > dist2D(ringMcp, wrist) * 1.3f;
-        bool pinkyOpen = dist2D(pinkyTip, wrist) > dist2D(pinkyMcp, wrist) * 1.3f;
+        bool indexOpen = dist2D(indexTip, wrist) > dist2D(indexMcp, wrist) * 1.15f;  // REDUCED from 1.3
+        bool middleOpen = dist2D(middleTip, wrist) > dist2D(middleMcp, wrist) * 1.15f;
+        bool ringOpen = dist2D(ringTip, wrist) > dist2D(ringMcp, wrist) * 1.15f;
+        bool pinkyOpen = dist2D(pinkyTip, wrist) > dist2D(pinkyMcp, wrist) * 1.15f;
 
         // Thumb is special: check if TIP is far from index MCP (spread out)
-        bool thumbOpen = dist2D(thumbTip, indexMcp) > 0.08f;
+        bool thumbOpen = dist2D(thumbTip, indexMcp) > 0.05f;  // REDUCED from 0.08
 
         // Pinch detection: Thumb Tip close to Index Tip
         float pinchDist2D = dist2D(thumbTip, indexTip);
@@ -441,9 +457,9 @@ void ProcessingLoop::processFrame(Frame* frame) {
         fistDist = (dist2D(indexTip, palmCenter) + dist2D(middleTip, palmCenter) +
                     dist2D(ringTip, palmCenter) + dist2D(pinkyTip, palmCenter)) / 4.0f;
 
-        // Thresholds
-        const float PINCH_THRESH = 0.06f;
-        const float FIST_THRESH = 0.12f;
+        // Thresholds (relaxed for better detection)
+        const float PINCH_THRESH = 0.08f;  // INCREASED from 0.06
+        const float FIST_THRESH = 0.15f;   // INCREASED from 0.12
 
         // Gesture Logic (priority order)
         if (fistDist < FIST_THRESH && !thumbOpen) {
@@ -497,7 +513,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
         // Log Gesture occasionally
         static int gestureLogCounter = 0;
-        if (++gestureLogCounter % 60 == 0) {
+        if (++gestureLogCounter % 90 == 0) {  // REDUCED frequency from 60 to 90
             Logger::info("Gesture: ", gestureName, " | Fingers: T:", thumbOpen,
                          " I:", indexOpen, " M:", middleOpen, " R:", ringOpen, " P:", pinkyOpen,
                          " | Pinch:", pinchDist, " Fist:", fistDist);
@@ -601,9 +617,12 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
             numDetections = std::min(numDetections, 10); // Cap for sanity
 
             for (int i = 0; i < numDetections; ++i) {
-                float score = frame->palmData[i * stride + 0];
+                float rawScore = frame->palmData[i * stride + 0];
 
-                if (score > 0.5f) {  // Confidence threshold
+                // CRITICAL FIX: Apply sigmoid to raw logits
+                float score = 1.0f / (1.0f + std::exp(-rawScore));
+
+                if (score > 0.5f) {  // Confidence threshold (after sigmoid)
                     numHands++;
 
                     // Extract normalized bbox (center + size format)
@@ -613,20 +632,20 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
                     float h = frame->palmData[i * stride + 4];
 
                     // Normalize if in pixel coordinates
-                    if (cx > 1.0f) cx /= 128.0f;
-                    if (cy > 1.0f) cy /= 128.0f;
-                    if (w > 1.0f) w /= 128.0f;
-                    if (h > 1.0f) h /= 128.0f;
+                    if (cx > 1.0f) cx /= 192.0f;
+                    if (cy > 1.0f) cy /= 192.0f;
+                    if (w > 1.0f) w /= 192.0f;
+                    if (h > 1.0f) h /= 192.0f;
 
-                    // Un-letterbox from 128x128 to original frame
+                    // Un-letterbox from 192x192 to original frame
                     float x1 = cx - w / 2.0f;
                     float y1 = cy - h / 2.0f;
                     float x2 = cx + w / 2.0f;
                     float y2 = cy + h / 2.0f;
 
                     // Apply unletterbox transformation
-                    unletterbox(x1, y1, 128.0f, (float)frame->width, (float)frame->height);
-                    unletterbox(x2, y2, 128.0f, (float)frame->width, (float)frame->height);
+                    unletterbox(x1, y1, 192.0f, (float)frame->width, (float)frame->height);
+                    unletterbox(x2, y2, 192.0f, (float)frame->width, (float)frame->height);
 
                     // Scale to debug frame
                     int px1 = static_cast<int>(x1 * debugFrame.cols);
@@ -670,8 +689,9 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame,
         pixelLandmarks.reserve(21);
 
         for (const auto& lm : currentLandmarks) {
-            int x = static_cast<int>(lm.x * static_cast<float>(frame->width));
-            int y = static_cast<int>(lm.y * static_cast<float>(frame->height));
+            // Landmarks are normalized (0..1), scale to debugFrame dimensions
+            int x = static_cast<int>(lm.x * static_cast<float>(debugFrame.cols));
+            int y = static_cast<int>(lm.y * static_cast<float>(debugFrame.rows));
             pixelLandmarks.emplace_back(x, y);
         }
 

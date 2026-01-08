@@ -27,6 +27,7 @@ public:
         int previewHeight = 360;
         std::string nnPath; // Path to the neural network blob
         std::string deviceIp; // IP address for PoE devices (e.g., "169.254.1.222")
+        // Note: manualFocus removed - v3 API requires CameraControl Messages, not compile-time config
     };
 
     PipelineManager();
@@ -75,6 +76,7 @@ private:
 
     // Store queues created during pipeline construction
     std::map<std::string, std::shared_ptr<dai::MessageQueue>> queues_;
+
 
     void createPipeline(const Config& config);
 };

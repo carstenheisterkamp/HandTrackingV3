@@ -122,8 +122,23 @@ void InputLoop::loop() {
             // Remove reference since we own the data now
             frame->daiFrame = nullptr;
 
-            // NOTE: Mono L/R stereo frames disabled in minimal pipeline
-            // Will be re-enabled when stereo is added back
+            // STEREO DEPTH: Copy Mono L/R frames for GPU processing
+            frame->hasStereoData = false;
+            if (monoLeftFrame && monoRightFrame) {
+                size_t monoLeftSize = monoLeftFrame->getData().size();
+                size_t monoRightSize = monoRightFrame->getData().size();
+
+                if (monoLeftSize <= frame->monoSize && monoRightSize <= frame->monoSize) {
+                    std::memcpy(frame->monoLeftData.get(), monoLeftFrame->getData().data(), monoLeftSize);
+                    std::memcpy(frame->monoRightData.get(), monoRightFrame->getData().data(), monoRightSize);
+
+                    frame->monoWidth = monoLeftFrame->getWidth();
+                    frame->monoHeight = monoLeftFrame->getHeight();
+                    frame->hasStereoData = true;
+                } else {
+                    Logger::error("InputLoop: Mono frame too large (", monoLeftSize, " > ", frame->monoSize, ")");
+                }
+            }
 
             // 3. Fill Metadata
             frame->width = imgFrame->getWidth();
@@ -131,7 +146,7 @@ void InputLoop::loop() {
             frame->type = (int)imgFrame->getType();
             frame->sequenceNum = imgFrame->getSequenceNum();
             frame->timestamp = std::chrono::steady_clock::now(); // Host arrival
-            // frame->captureTimestamp = ... // TODO: Convert imgFrame->getTimestamp()
+            frame->captureTimestamp = imgFrame->getTimestamp();  // Glass capture time
 
             // 4. Copy NN Data if available
             if (landmarkData) {
@@ -178,7 +193,19 @@ void InputLoop::loop() {
             if (palmData) {
                 try {
                     auto layerNames = palmData->getAllLayerNames();
+                    static bool loggedPalm = false;
+                    if (!loggedPalm) {
+                        Logger::info("Palm Detection Layers:");
+                        for (const auto& name : layerNames) {
+                            auto t = palmData->getTensor<float>(name);
+                            Logger::info(" - Layer '", name, "': size=", t.size());
+                        }
+                        loggedPalm = true;
+                    }
+
                     if (!layerNames.empty()) {
+                        // TODO: Handle multiple output tensors (Scores + Regressors)
+                        // Currently assuming concatenated or first tensor contains all data
                         auto tensor = palmData->getTensor<float>(layerNames[0]);
                         frame->palmData.assign(tensor.begin(), tensor.end());
                     } else {

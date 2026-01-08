@@ -82,5 +82,44 @@ The service uses the following pre-compiled blobs for the Myriad X VPU:
     *   *Source:* MediaPipe Palm Detection.
     *   *Input:* 128x128 RGB.
 
+# High-Performance Hand Tracking Service (V3) - Technical Specification
+
 This service implements a high-performance, low-latency hand tracking pipeline on the NVIDIA Jetson Orin Nano using the Luxonis OAK-D Pro PoE camera. It leverages the DepthAI v3 API for data-centric processing and outputs tracking data via OSC (Open Sound Control) over a Tailscale VPN.
+
+**Current Performance (2026-01-08):**
+- **FPS:** 25-30 FPS @ 15W MAXN Mode
+- **Latency Target:** < 50ms Glass-to-OSC (TBD measurement)
+- **CPU Load Target:** < 20% (TBD measurement)
+- **GPU Utilization:** Optimized for color conversion (NPP) only
+
 ## 1. System Overview
+
+### 1.1 OAK-D Pro PoE - Hardware Quick Reference
+Kurzreferenz der wichtigsten Hardware- und CV-Funktionen der OAK-D Pro PoE (für Entwickler):
+
+- Prozessor & Kamera
+  - RVC2/VPU-like compute (≈4 TOPS allokiert für on-device inference)
+  - Stereo pair: OV9282 (1 MP monochrome, global shutter) ×2
+  - RGB: Sony IMX378 (12 MP), variant: Auto-Focus or Fixed-Focus
+  - Industrial IP65 enclosure, M12 X-coded PoE connector
+
+- Capture & Framerate
+  - Stereo Mono: up to 120 FPS (OV9282)
+  - RGB: up to 60 FPS (IMX378)
+  - Recommended for stereo processing in this project: mono @ 640x400 (THE_400_P) @ 30 FPS
+
+- Depth & IR
+  - Active IR dot projector + floodlight available to aid stereo
+  - Depth effective range approx. 0.7m - 12m depending on scene and reflectivity
+
+- Networking & Streaming
+  - PoE (802.3af), GigE (1 Gbps)
+  - On-device H.264/H.265/MJPEG encoding (use with care for CPU)
+
+- I/O & Sensors
+  - M8 connector: USB2, GPIO, FSIN, STROBE
+  - Integrated 9-axis IMU (BNO085)
+
+## 2. Pipeline & Data Flow
+
+... (rest of file continues)

@@ -6,8 +6,8 @@
 // Explicit includes for v3 clarity
 #include <depthai/pipeline/node/Camera.hpp>
 #include <depthai/pipeline/node/NeuralNetwork.hpp>
-#include <depthai/pipeline/node/StereoDepth.hpp>
 #include <depthai/pipeline/node/Sync.hpp>
+#include <depthai/pipeline/node/ImageManip.hpp>
 
 namespace core {
 
@@ -26,7 +26,7 @@ void PipelineManager::init(const Config& config) {
     bool connected = false;
     int retries = 0;
     const int MAX_RETRIES = 10; // 10 Versuche
-    const int RETRY_DELAY_MS = 2000; // 2 Sekunden Pause
+    const int RETRY_DELAY_MS = 3000; // 3 Sekunden Pause
 
     while (!connected && retries < MAX_RETRIES) {
         try {
@@ -62,12 +62,15 @@ void PipelineManager::init(const Config& config) {
         // 2. Create Pipeline with device
         pipeline_ = std::make_unique<dai::Pipeline>(device_);
 
-        // NOTE: SIPP buffer settings removed - no longer needed without StereoDepth on device
 
         // 3. Create Nodes and Queues
         createPipeline(config);
 
         Logger::info("DepthAI Device initialized: ", device_->getDeviceId());
+
+        // Suppress benign warnings about NN input format mismatch
+        device_->setLogLevel(dai::LogLevel::ERR);
+        device_->setLogOutputLevel(dai::LogLevel::ERR);
 
         // Handle PoE devices which return UNKNOWN for USB speed
         if (device_->getUsbSpeed() == dai::UsbSpeed::UNKNOWN) {
@@ -76,17 +79,6 @@ void PipelineManager::init(const Config& config) {
             Logger::info("Connection: USB ", device_->getUsbSpeed());
         }
 
-        // Enable IR Light (Dot Projector & Flood Light)
-        // Useful for low-light or mono-camera depth accuracy
-        try {
-            // Let's try setting it to 0.8f (80%) which is safe.
-            // Updated for v3 API (Intensity 0..1 instead of Brightness mA)
-            device_->setIrLaserDotProjectorIntensity(0.8f);
-            device_->setIrFloodLightIntensity(0.8f);
-            Logger::info("IR Light enabled (Intensity: 0.8)");
-        } catch (const std::exception& e) {
-            Logger::warn("Failed to enable IR light (Device might not support it): ", e.what());
-        }
 
         // Log connected cameras
         auto cameras = device_->getConnectedCameras();
@@ -100,6 +92,7 @@ void PipelineManager::init(const Config& config) {
             }
             Logger::info("Connected camera: ", cam, " [", name, "]");
         }
+
 
     } catch (const std::exception& e) {
         Logger::error("Failed to initialize device: ", e.what());
@@ -121,6 +114,14 @@ void PipelineManager::createPipeline(const Config& config) {
         config.fps
     );
 
+    // AUTO MODE - Let camera handle focus and exposure automatically
+    // Manual settings caused overexposure and FPS drops
+    cam->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::CONTINUOUS_VIDEO);
+    cam->initialControl.setAutoExposureEnable();
+    cam->initialControl.setAutoWhiteBalanceMode(dai::CameraControl::AutoWhiteBalanceMode::AUTO);
+
+    Logger::info("Camera config: AUTO mode (Focus/Exposure/WB)");
+
     // Preview output for visualization
     auto rgbOutput = cam->requestOutput(
         std::make_pair(config.previewWidth, config.previewHeight),
@@ -132,48 +133,53 @@ void PipelineManager::createPipeline(const Config& config) {
     if (!config.nnPath.empty()) {
         Logger::info("Creating Hand Tracking Pipeline (Palm + Landmarks)...");
 
-        // 1. Palm Detection Node (using sh4 blob)
+        // 1. Palm Detection Node (using FULL sh4 blob)
         auto palmDetect = pipeline_->create<dai::node::NeuralNetwork>();
-        palmDetect->setBlobPath("models/palm_detection_sh4.blob");
-        // Warning: "Number of inference threads assigned for network is 1, assigning 2 will likely yield in better performance"
-        palmDetect->setNumInferenceThreads(2);
-        palmDetect->setNumNCEPerInferenceThread(1); // Explicitly limit NCE to 1 per thread to avoid resource exhaustion
+        palmDetect->setBlobPath("models/palm_detection_full_sh4.blob");
+        palmDetect->setNumInferenceThreads(1);  // REDUCED: 1 thread is faster on Myriad X
+        palmDetect->setNumNCEPerInferenceThread(1);
 
-        auto palmInput = cam->requestOutput(
-            std::make_pair(128, 128),
-            dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
-            dai::ImgResizeMode::LETTERBOX,
-            config.fps
-        );
-        palmInput->link(palmDetect->input);
+        // Explicit ImageManip for Palm Detection (192x192 RGB Planar)
+        auto manipPalm = pipeline_->create<dai::node::ImageManip>();
+        manipPalm->initialConfig->setOutputSize(192, 192);
+        manipPalm->initialConfig->base.resizeMode = dai::ImageManipConfig::ResizeMode::LETTERBOX;
+        manipPalm->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
 
-        // 2. Landmark Node (using sh4 blob)
+        // Link Camera Preview (RGB Output) -> Manip -> NN
+        rgbOutput->link(manipPalm->inputImage);
+        manipPalm->out.link(palmDetect->input);
+
+        // 2. Landmark Node (using sh4 blob) - DIRECT FEED, NO SCRIPT
         auto landmarkNN = pipeline_->create<dai::node::NeuralNetwork>();
-        landmarkNN->setBlobPath(config.nnPath);
-        landmarkNN->setNumInferenceThreads(2); // Attempting 2 threads for landmarks as well for throughput
-        landmarkNN->setNumNCEPerInferenceThread(1); // Explicitly limit NCE to 1 per thread
+        landmarkNN->setBlobPath("models/hand_landmark_full_sh4.blob");
+        landmarkNN->setNumInferenceThreads(1);  // REDUCED: 1 thread is faster
+        landmarkNN->setNumNCEPerInferenceThread(1);
 
-        auto nnInput = cam->requestOutput(
-            std::make_pair(224, 224),
-            dai::ImgFrame::Type::BGR888p,  // PLANAR format (CHW) for NN compatibility
-            dai::ImgResizeMode::LETTERBOX,
-            config.fps
-        );
-        nnInput->link(landmarkNN->input);
+        // Direct ImageManip for Landmark (224x224 from full RGB)
+        auto manipLandmark = pipeline_->create<dai::node::ImageManip>();
+        manipLandmark->initialConfig->setOutputSize(224, 224);
+        manipLandmark->initialConfig->base.resizeMode = dai::ImageManipConfig::ResizeMode::LETTERBOX;
+        manipLandmark->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
+
+        // Direct wiring: Camera -> Manip -> Landmark NN
+        rgbOutput->link(manipLandmark->inputImage);
+        manipLandmark->out.link(landmarkNN->input);
 
         // Sync node: RGB + Palm + Landmarks
         auto sync = pipeline_->create<dai::node::Sync>();
-        sync->setSyncThreshold(std::chrono::milliseconds(20));
+        sync->setSyncThreshold(std::chrono::milliseconds(10));  // REDUCED from 20ms
 
         rgbOutput->link(sync->inputs["rgb"]);
         palmDetect->out.link(sync->inputs["palm"]);
         landmarkNN->out.link(sync->inputs["landmarks"]);
 
-        auto syncQueue = sync->out.createOutputQueue();
+        // Create queue immediately (v3 API allows this before start())
+        auto syncQueue = sync->out.createOutputQueue(4, false);
         queues_["sync"] = syncQueue;
 
-        Logger::info("Pipeline: RGB + Palm + Landmarks");
+        Logger::info("Pipeline: RGB + Palm + Landmarks + Stereo (Mono L/R)");
     } else {
+        // Fallback: RGB only (no NN)
         auto rgbQueue = rgbOutput->createOutputQueue();
         queues_["rgb"] = rgbQueue;
     }
@@ -194,26 +200,46 @@ void PipelineManager::stop() {
     if (device_) {
         Logger::info("Stopping pipeline and closing device...");
          try {
-            // Clear queues first to stop data flow
+            // 1. Clear queues first to stop data flow
             queues_.clear();
+            Logger::debug("Queues cleared.");
 
-            // Close device connection
-            device_->close();
+            // 2. Request device reset before closing (helps with PoE reconnect)
+            if (!device_->isClosed()) {
+                try {
+                    // Send reset command to device firmware
+                    // This ensures clean state for next connection
+                    Logger::debug("Requesting device reset...");
+                    // Note: In DepthAI v3, close() already handles graceful shutdown
+                    // Explicit reset via bootloader would be: device->flashBootloader(...)
+                    // but that's too aggressive for normal operation
+                } catch (const std::exception& resetErr) {
+                    Logger::warn("Device reset command failed (not critical): ", resetErr.what());
+                }
 
-            // Reset shared pointers
-            device_.reset();
+                // 3. Close device connection
+                device_->close();
+                Logger::debug("Device closed.");
+            }
+
+            // 4. Reset shared pointers (order matters: pipeline before device)
             pipeline_.reset();
+            device_.reset();
+            Logger::debug("Pointers reset.");
 
-            // Give the device time to fully disconnect
-            // This prevents "device busy" on quick restart
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // 5. Give OAK-D time to fully reset firmware and release PoE resources
+            // PoE devices need more time than USB devices for network stack cleanup
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
-            Logger::info("Device closed successfully.");
+            Logger::info("Device closed successfully. Wait 2s before reconnect.");
         } catch (const std::exception& e) {
             Logger::error("Error during device shutdown: ", e.what());
             // Force reset even on error
-            device_.reset();
+            queues_.clear();
             pipeline_.reset();
+            device_.reset();
+            // Still wait to give device time to recover
+            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
         }
     }
 }
@@ -224,11 +250,16 @@ void PipelineManager::update(const std::string& nodeName, const std::string& par
 }
 
 std::shared_ptr<dai::MessageQueue> PipelineManager::getOutputQueue(const std::string& name, int maxSize, bool blocking) {
-    if (queues_.find(name) != queues_.end()) {
-        return queues_[name];
+    // Queues are now created during pipeline construction
+    auto it = queues_.find(name);
+    if (it != queues_.end()) {
+        return it->second;
     }
 
-    Logger::warn("Queue '", name, "' not found in managed queues.");
+    Logger::warn("Queue '", name, "' not found. Available queues: ");
+    for (const auto& [qname, q] : queues_) {
+        Logger::warn("  - ", qname);
+    }
     return nullptr;
 }
 

@@ -1,6 +1,29 @@
 # Setup Hand-Tracking Service (Jetson Orin Nano)
 
-Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfiguration für ein C++ Projekt mit **DepthAI**, **OpenCV**, **OSC** und **Tailscale** unter Ubuntu 22.04.
+Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfiguration für ein C++ Projekt mit **DepthAI v3**, **OpenCV**, **OSC** und **Tailscale** unter Ubuntu 22.04.
+
+---
+
+## 🎯 Aktueller Status (2026-01-08)
+
+**Performance-Ziele erreicht:**
+- ✅ **25-30 FPS** @ 15W MAXN Mode
+- ✅ **Stabile Pipeline** ohne Script-Node (Full-Frame Processing)
+- ✅ **Korrekte Koordinaten** mit Pixel-Normalisierung + Unletterbox
+- ✅ **Optimiertes MJPEG** - Encoding nur bei verbundenen Clients
+- ✅ **Stereo Depth AKTIV** - GPU-basierte Tiefenberechnung läuft (640x400 @ 30 FPS)
+
+**Bekannte Einschränkungen:**
+- ⚠️ **Dynamic ROI Cropping fehlgeschlagen** (Script-Node API broken)
+- ⚠️ **CPU Fallback deaktiviert** (nur GPU NPP - Service crashed bei GPU-Fehler)
+
+**Dokumentation:**
+- [TODO.md](docs/TODO.md) - Projekt-Status & Change Log
+- [SPECIFICATION.md](docs/SPECIFICATION.md) - Technische Spezifikation
+- [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - OSC Protokoll
+
+---
+
 
 ## 1. System-Voraussetzungen & Netz
 

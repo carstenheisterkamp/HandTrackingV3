@@ -23,8 +23,16 @@ void MjpegServer::start() {
         return;
     }
 
+    // Set socket options for reuse
     int opt = 1;
-    setsockopt(_serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(_serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        core::Logger::warn("MjpegServer: Failed to set SO_REUSEADDR");
+    }
+
+    // SO_REUSEPORT allows multiple binds to same port (useful for quick restart)
+    if (setsockopt(_serverSocket, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+        core::Logger::warn("MjpegServer: Failed to set SO_REUSEPORT (not critical)");
+    }
 
     sockaddr_in address;
     address.sin_family = AF_INET;
@@ -33,6 +41,7 @@ void MjpegServer::start() {
 
     if (bind(_serverSocket, (struct sockaddr*)&address, sizeof(address)) < 0) {
         core::Logger::error("MjpegServer: Failed to bind to port ", _port);
+        core::Logger::error("MjpegServer: Is another instance still running? Run: sudo lsof -i :", _port);
         close(_serverSocket);
         return;
     }
@@ -85,6 +94,15 @@ void MjpegServer::stop() {
 
 void MjpegServer::update(const cv::Mat& frame) {
     if (!_running || frame.empty()) return;
+
+    // CRITICAL OPTIMIZATION: Skip JPEG encoding if no clients connected
+    // JPEG encoding is EXPENSIVE (~12ms per frame) and kills FPS
+    {
+        std::lock_guard<std::mutex> lock(_clientsMutex);
+        if (_clients.empty()) {
+            return; // No clients, skip encoding
+        }
+    }
 
     std::vector<uchar> buf;
     std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};

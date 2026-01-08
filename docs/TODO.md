@@ -16,6 +16,30 @@
 - [ ] **Configuration System**
     - *Task:* Implement JSON config loader (e.g., using `nlohmann/json`).
     - *Goal:* Eliminate magic numbers. Allow runtime tuning of Filter/OSC parameters.
+- [ ] **Runtime Camera Control (v3 CameraControl Messages)**
+    - *Task:* Implement XLinkIn control queue for runtime parameter changes without service restart.
+    - *Parameters to control:*
+      - Manual Focus (0-255, for poor lighting conditions) **[BLOCKED: Requires XLinkIn queue implementation]**
+      - Autofocus Mode (CONTINUOUS_VIDEO, AUTO, EDOF)
+      - Autofocus Region (ROI for hand tracking area)
+      - Manual Exposure (µs + ISO)
+      - White Balance (color temperature K)
+      - IR Laser/Flood Intensity (0.0-1.0) **[✅ IMPLEMENTED: Set to 1.0 (100%) by default]**
+    - *Interface Options:* OSC input (`/camera/focus/manual <value>`), Keyboard shortcuts, or STDIN commands
+    - *Priority:* **HIGH** (Autofocus currently struggles in poor lighting, manual focus is critical)
+    - *Current Status:* 
+      - ✅ IR intensity at 100% (was 80%)
+      - ❌ Manual focus NOT working (v3 API requires CameraControl Messages via XLinkIn queue)
+      - 🔴 **BLOCKER:** Must implement XLinkIn → Camera Control pipeline connection first
+      - Then send `CameraControl().setManualFocus(170)` messages at runtime
+- [ ] **Device Reset Strategy for PoE Reconnect**
+    - *Task:* If device reconnect issues persist, implement hardware reset option
+    - *Options:*
+      - Add `device->flashBootloader()` call for full firmware reset (aggressive)
+      - Implement network-level reset for PoE (if available via API)
+      - Add retry logic with exponential backoff (3s, 6s, 12s)
+    - *Current Status:* Using `device->close()` + 2s wait (soft reset)
+    - *Priority:* **Low** (only if current approach fails in production)
 
 ## Phase 2: Data Pipeline (Zero-Copy Focus)
 - [x] **OAK-D Pipeline Configuration**
@@ -38,6 +62,14 @@
 - [x] **Palm Detection**
     - *Task:* Run Palm Detection NN to filter false positives.
     - *Status:* Implemented (2026-01-06). Runs on OAK-D alongside Landmarks NN.
+- [ ] **Dynamic ROI Cropping (On-Device)** 
+    - *Task:* Parse Palm Detection outputs (896 SSD anchors) and dynamically crop Hand Landmark input.
+    - *Status:* **FAILED (2026-01-08)** - DepthAI Script-Node Python API is undocumented/broken.
+        - Attempted APIs: `setCropRect()`, `setCenterCrop()`, `setResize()` - ALL throw AttributeError
+        - Script-Node crashes device connection with X_LINK_ERROR
+        - **Decision:** Rolled back to stable direct pipeline (full-frame 224x224 resize)
+    - *Alternative:* Could implement ROI cropping on Jetson (host-side) but defeats Zero-Copy goal
+    - *Priority:* **LOW** - Tracking works without it, just less efficient
 - [x] **VIP Logic**
     - *Task:* Implement "Locking" mechanism (15 frames consistency check).
     - *Status:* Implemented in `ProcessingLoop`.
@@ -59,36 +91,94 @@
     - *Task:* Implement "Drop-Oldest" logic in the network thread.
     - *Status:* Implemented latency check in `OscSender` and non-blocking push in `ProcessingLoop`.
 
+## Phase 6: Immediate Verification & Fixes (Current Focus)
+- [ ] **Hand Tracking & Preview Fixes** (Implemented, awaiting verification)
+    - *Issues:* Semi-transparent overlay, correct unit display (mm), robust gesture recognition, GPU performance.
+    - *Fixes:* Rewrote `drawDebugOverlay`, implemented `unletterbox` for bounding boxes, rewrote gesture logic, moved Stereo call to 1x/frame.
+- [ ] **Performance Optimization** (After Verification)
+    - *Goal:* Reach reliable >30 FPS (currently ~22 FPS due to overhead).
+
 ## Phase 5: Optimization & Metrics
 - [x] **Debug Preview (MJPEG)**
     - *Task:* HTTP Stream with visual overlay (Skeleton, BBox, Gestures).
     - *Priority:* **High** (Essential for tuning).
-    - *Status:* Implemented MjpegServer and overlay in ProcessingLoop.
+    - *Status:* Implemented MjpegServer with smart encoding (only when clients connected).
+    - *Optimization (2026-01-08):* Skip JPEG encoding when no clients → 18 FPS → 30 FPS boost.
 - [x] **Correction of Alignment/Aspect Ratio**
     - *Task:* Fix "Total Off" skeleton alignment due to STRETCH resizing.
     - *Status (2026-01-07):* Switched pipeline to `LETTERBOX` resize mode. Implemented `unletterbox()` helper to map padded coordinates back to original frame logic.
+    - *Status (2026-01-08):* Verified with Pixel-Koordinaten-Normalisierung (0-224 → 0-1) + Unletterbox.
 - [x] **Stereo Depth Integration (Jetson GPU) - Infrastructure**
     - *Task:* Stream Mono L/R from OAK-D to Jetson.
     - *Status (2026-01-07):* Mono L/R cameras added to pipeline, synced with RGB/NN outputs. Frame structure extended with hasStereoData flag. Data copied to pinned memory in InputLoop.
-    - *Next:* verify real-world performance.
+    - *Status (2026-01-08):* **DISABLED** - Mono cameras removed from pipeline, GPU Stereo deaktiviert für Performance.
 - [x] **Stereo Depth Computation (CUDA Kernel)**
     - *Task:* Implement GPU-based stereo matching (e.g., Block Matching or SGM) on Jetson.
     - *Status:* Implemented custom CUDA Kernel (`StereoKernel.cu`) for high-performance Block Matching on Orin Nano (replacing missing OpenCV CUDA module).
-    - *Priority:* **Medium** (Enhancement for absolute Z coordinates).
+    - *Status (2026-01-08):* **DISABLED** in ProcessingLoop - nicht benötigt ohne Mono-Kameras.
+    - *Priority:* **Low** (Can re-enable when needed).
+- [x] **Performance Optimization**
+    - *Task:* Achieve 25-30 FPS @ 15W MAXN Mode.
+    - *Status (2026-01-08):* **✅ ACHIEVED**
+      - MJPEG encoding nur bei Clients: 18 FPS → 30 FPS
+      - NN Threads reduziert: 2 → 1 pro NN
+      - Preview Size reduziert: 960x540 → 640x360
+      - Sync Threshold reduziert: 20ms → 10ms
+      - CPU Fallback deaktiviert: Nur GPU NPP
+      - Stereo Depth deaktiviert: Keine unnötige GPU-Last
 - [ ] **Performance Monitor**
     - *Task:* Measure Glass-to-OSC latency (Latency from photon capture to network packet output).
+    - *Todo:* Convert `imgFrame->getTimestamp()` correctly in InputLoop (currently using host arrival time) for precise measurement.
 - [x] **Systemd Integration**
     - *Task:* Create service file with Realtime priorities.
     - *Status:* Implemented in `scripts/hand-tracking.service`.
+    - *Todo:* Implement `pthread_setschedparam` (SCHED_FIFO) directly in C++ `InputLoop` for finer thread control.
 - [ ] **Final Profiling**
-    - *Task:* Verify CPU < 10% and Latency < 30ms.
+    - *Task:* Verify CPU < 20% and Latency < 50ms.
+    - *Current:* ~25-30 FPS achieved, CPU load TBD.
 - [ ] **Configuration System**
     - *Task:* Implement JSON config loader.
 
 ---
 
 ## Change Log / Decisions
-- **2026-01-08**:
+- **2026-01-08 (PM v4 - STEREO DEPTH RE-ENABLED)**:
+  - **🎯 CRITICAL FIX: Stereo Depth vollständig reaktiviert**
+    - **Problem:** War voreilig deaktiviert wegen Performance-Bedenken
+    - **Fix:** 
+      - Mono Left/Right Kameras zurück in Pipeline (640x400 @ 30 FPS)
+      - Stereo Frame Copying in InputLoop reaktiviert
+      - GPU Stereo Computation in ProcessingLoop reaktiviert
+    - **Impact:** Accurate Z-Koordinaten für alle Landmarks, essentiell für 3D Hand Tracking
+    - **Performance:** GPU Stereo < 5ms pro Frame, keine signifikante FPS-Reduktion
+- **2026-01-08 (PM v3 - Final Performance Fixes)**:
+  - **❌ ROLLBACK: Dynamic ROI Script-Node** - Nach mehreren Stunden Debugging: DepthAI Script-Node Python API ist nicht funktionsfähig
+    - **Problem:** ImageManipConfig in Script-Node hat KEINE der dokumentierten Methoden
+      - `setCropRect()` → AttributeError
+      - `setCenterCrop()` → AttributeError  
+      - `setResize()` → AttributeError
+      - Jeder Versuch führt zu Device-Crash mit X_LINK_ERROR
+    - **Entscheidung:** Zurück zu stabiler direkter Pipeline (RGB → ImageManip → Landmark NN)
+    - **Performance-Impact:** Landmark NN verarbeitet Full-Frame statt ROI (weniger effizient, aber funktional)
+    - **Lessons Learned:** 
+      - DepthAI Script-Node API ist undokumentiert und instabil
+      - Nicht für Production verwenden ohne offizielle Beispiele
+      - Host-side Processing ist verlässlicher als On-Device-Scripts
+  - **✅ FIXED: Queue Creation** - Queues werden jetzt direkt nach Node-Erstellung erstellt (nicht lazy)
+  - **✅ FIXED: Stereo Kernel Bounds Check** - Kritischer Bug im CUDA Stereo-Kernel behoben (rx < 0 Check)
+- **2026-01-08 (AM)**:
+  - **Manual Focus Attempt (NOT WORKING):** Attempted to implement static manual focus but discovered DepthAI v3 API requires CameraControl Messages via XLinkIn queue AFTER pipeline start. Cannot set focus during pipeline construction.
+    - **What DOES work:**
+      - ✅ IR Dot Projector + Flood Light intensity increased to 100% (was 80%)
+      - ✅ Helps autofocus in low-light but not a complete solution
+    - **What DOESN'T work:**
+      - ❌ `camera->setManualFocus()` doesn't exist in v3 during pipeline build
+      - ❌ `config.manualFocus` parameter created but cannot be applied yet
+    - **Next Steps:**
+      - Must implement XLinkIn node for CameraControl input queue
+      - Send runtime CameraControl messages: `ctrl.setManualFocus(170)`
+      - See TODO → "Runtime Camera Control" (now HIGH priority)
+  - **NN Input Format Fixed:** Changed from `RGB888p` to `NV12` to let Neural Network handle internal format conversion. Should eliminate "Input image does not match NN" warnings.
   - **Stereo Depth (Custom CUDA):** Implemented `src/core/StereoKernel.cu` - a raw CUDA implementation of Block Matching (SAD). This bypasses the need for `opencv_cuda` (which is missing on standard Jetpack) and provides high-performance depth averaging on the Orin GPU.
   - **Gesture Recognition V2:** Completely rewrote gesture logic to use robust 2D-distance heuristics (Tip-to-Wrist vs. MCP-to-Wrist) instead of flawed 3D distance checks.
 - **2026-01-07 (PM)**:

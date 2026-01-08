@@ -60,10 +60,10 @@ private:
     struct Velocity { float x = 0, y = 0, z = 0; };
     Velocity _lastVelocity;
 
-    // VIP Logic
+    // VIP Logic - requires 30 consecutive frames (~1 second) for lock
     int _lockCounter = 0;
     bool _vipLocked = false;
-    static constexpr int LOCK_THRESHOLD = 15;
+    static constexpr int LOCK_THRESHOLD = 30;  // INCREASED from 15 to reduce false positives
 
     std::vector<math::KalmanFilter> _landmarkFilters;
 

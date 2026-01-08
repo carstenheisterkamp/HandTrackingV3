@@ -45,6 +45,12 @@ __global__ void stereoSADKernel(const uint8_t* __restrict__ left,
                 int ly = y + dy;
                 int rx = lx - d; // Right image pixel is shifted by 'd'
 
+                // CRITICAL: Bounds check for rx < 0 (disparity shifts right image left)
+                if (rx < 0 || rx >= width) {
+                    sad += 255; // Max penalty for out-of-bounds
+                    continue;
+                }
+
                 // Load pixels
                 int lVal = left[ly * width + lx];
                 int rVal = right[ly * width + rx];

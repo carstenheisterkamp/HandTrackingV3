@@ -1,12 +1,68 @@
 # Copilot Instructions: DepthAI v3 High-Performance Service
 
+## ⚠️ CRITICAL: READ FIRST
+**Before making ANY changes, read and follow: `.github/copilot-working-rules.md`**
+
+Key Rules:
+1. **NO architecture changes without explicit approval**
+2. **NO utility scripts bloat** (CLion handles deployment)
+3. **STAY FOCUSED on the current TODO item**
+4. **ASK before major changes**
+
+---
+
 ## 🎯 Project Context (V3 Focus)
 
-* **API:** DepthAI API Version 3 (v3). **Strict requirement:** Do not use legacy `dai::node` Gen2 structures if v3 equivalents exist.
+* **API:** DepthAI API Version 3 (v3). Strict requirement: do not use legacy `dai::node` Gen2 structures if v3 equivalents exist.
 * **Hardware:** NVIDIA Jetson Orin Nano (8GB), OAK-D Pro PoE (Ethernet/PoE only; USB/libusb path is not used).
 * **Low-Level:** Focus on direct buffer handling and zero-copy transfers between OAK and Jetson GPU (CUDA).
-* **Dev Workflow:** Build and run on Jetson (User: `nvidia`); macOS host is IDE/remote frontend only. **Network:** Always use Tailscale IP `100.101.16.21`. **Build:** CLion Remote with Ninja.
+* **Dev Workflow:** Build and run on Jetson (user: `nvidia`); macOS host is IDE/remote frontend only. **Network:** Always use Tailscale IP `100.101.16.21`. **Build:** CLion Remote with Ninja.
 * **References:** DepthAI v3 C++ API https://docs.luxonis.com/software-v3/depthai/api/cpp/ · depthai-core https://github.com/luxonis/depthai-core
+
+---
+
+### OAK-D Pro PoE Quick Reference (use this for decisions & code)
+
+Keep this short reference at hand — it captures the device features and the engineering constraints we must respect when changing pipeline or runtime behaviour.
+
+- Hardware summary
+  - Stereo pair: OV9282 (1 MP monochrome, global-shutter) ×2 — high-FPS stereo source.
+  - RGB: Sony IMX378 (12 MP) center color sensor; available in Auto-Focus or Fixed-Focus variants.
+  - On-device compute: VPU capable of running on-device inference (approx. 4 TOPS total available on the device for models).
+  - PoE: 802.3af over M12 X-coded GigE (1 Gbps) — video + power over a single cable.
+  - Rugged: IP65 enclosure, M8 IO for GPIO/USB2/FSIN/STROBE.
+
+- Typical, recommended modes for our service
+  - Stereo mono capture: use 640x400 (THE_400_P) for left/right mono cameras when doing Jetson-side stereo matching. This is a good performance/accuracy balance.
+  - RGB preview: use a small preview (e.g., 640x360) to reduce PoE bandwidth.
+  - Neural nets: prefer NV12 image format where possible (zero-copy path) and ImageManip `LETTERBOX` for NN resizing — unwrap with `unletterbox()` on host.
+  - NN threads: use 1 inference thread per Myriad NN for stability and performance.
+  - ISP on-device: use ImageManip/ISP features for cropping/letterbox when possible to avoid host conversion.
+
+- Stereo & Depth
+  - Active IR dot projector + floodlight improve stereo on low-texture scenes.
+  - Depth effective range typically ~0.7m to ~12m depending on scene and reflectivity.
+  - For accurate depth: stream mono left/right to Jetson, compute stereo with CUDA (our `StereoKernel.cu`) and synchronize with landmark coordinates.
+  - DO NOT disable Stereo Depth without explicit sign-off — it is a primary feature for 3D tracking.
+
+- Camera controls & runtime config
+  - Use DepthAI v3 `Pipeline::update` / CameraControl via XLinkIn to adjust exposure/focus at runtime (preferred). Do not set manual focus during pipeline construction unless explicitly required.
+  - Prefer autofocus (CONTINUOUS_VIDEO) for general use; use manual/fixed focus only when repeatable, stable scene and after team approval.
+
+- Networking & streaming
+  - H.264/H.265/MJPEG are supported on-device — prefer not to encode on host if bandwidth permits; for preview use MJPEG only when clients connected (we implemented server-side skip to save CPU).
+  - For zero-copy path: prefer `dai::Buffer` dma-buf handles and NV12 transfer.
+
+- Power & thermal
+  - Expected power: up to ~7.5W under heavy load (camera + IR + VPU). Respect Jetson MAXN/15W mode for stable performance.
+
+- Practical rules for code changes (short)
+  - Always prefer on-device ImageManip/ISP for resizing/cropping before sending to host.
+  - Avoid `cv::cvtColor` on CPU in the hot path — use CUDA NPP or device-side formats.
+  - Mono L/R must be preserved for stereo depth; do not remove mono streams from the pipeline without approval.
+  - When in doubt: propose changes in a short plan and wait for approval.
+
+---
 
 ## 🏗 Build Environment & Stability
 
@@ -26,12 +82,12 @@
 ## 🚀 Performance & Real-Time (C++17)
 
 * **Memory Alignment:** Enforce strict memory alignment for Jetson. Use `std::aligned_alloc` for buffers shared between CPU and GPU.
-* **OAK ISP v3:** Use advanced v3 ISP functions for hardware cropping and on-device warping (dewarping) to maintain 0% CPU load on the Jetson.
+* **OAK ISP v3:** Use advanced v3 ISP functions for hardware cropping and on-device warping (dewarping) to maintain minimal CPU load on the Jetson.
 * **Thread-Safety:** Use `std::atomic` for status flags and high-performance `std::mutex` or lock-free structures for data exchange between the Video and OSC threads.
 
 ## 🖐 Tracking & VIP Logic
 
-* **Real-Time Heuristics:** Calculate velocity () and acceleration of hand landmarks directly within the C++ loop.
+* **Real-Time Heuristics:** Calculate velocity and acceleration of hand landmarks directly within the C++ loop.
 * **Stable VIP-ID:** Implement a Kalman filter or a low-pass filter for bounding box coordinates to prevent "jumping" in OSC output.
 
 ## 📡 OSC & Networking
@@ -94,9 +150,9 @@ Implement a `PerformanceMonitor` transmitting the following via `/service/metric
 
 * **Tooling:** Run `clang-format` (LLVM style) and `clang-tidy` (enable performance-* and readability-* checks) on changes; compile with `-Wall -Wextra -Werror` on Jetson.
 * **RAII & Safety:** No raw new/delete; prefer RAII wrappers and `std::unique_ptr`/`std::shared_ptr`. Guard hot-path pointers with assertions in debug builds.
-* **Hot Path Discipline:** Keine Allokationen/Locks im Inferenz-Hotpath; SPSC-Ringbuffer, `try_get`, keine Blocker. Logging im Hotpath minimieren oder auf Trace-Level per Feature-Flag.
-* **Determinismus:** Fixe Seeds für Filter/Kalman, konstante Sampling-Raten (30/60 Hz), Drop-Oldest Backpressure strikt durchsetzen.
-* **Error Handling:** Früh und klar failen: `Dai`/OSC/Netzwerk-Status prüfen, defensive Checks auf Null/Größe, klare Fehler-Logs; Exceptions im Hotpath vermeiden.
-* **Tests (gezielt):** Unit-Tests für Filter (Kalman/One-Euro Parameter), VIP-Locking (15 Frames), und OSC-Queue-Drop-Policy; einfache Benchmark/Timing-Probe für E2E-Latenz.
-* **No Magic Numbers:** Vermeide "Lucky Numbers" im Code. Nutze `constexpr` Konstanten für Compile-Time Werte oder eine zentrale `Config`-Klasse/JSON für Runtime-Parameter (z.B. Filter-Koeffizienten, Timeouts).
-* **Ordnung:** Keine ad-hoc Skripte oder Tests im Source-Root; Hilfsskripte unter `scripts/`, Tests unter `tests/`, Dokumentation unter `docs/` ablegen.
+* **Hot Path Discipline:** No allocations/locks in the inference hot path; use SPSC ringbuffer and `try_get`. Minimize logging in the hot path or only use trace level under feature flags.
+* **Determinism:** Fixed seeds for filters/Kalman, constant sampling rates (30/60 Hz), Drop-Oldest backpressure strictly enforced.
+* **Error Handling:** Fail early and clearly: check `dai`/OSC/network status, defensive null/size checks, clear error logs; avoid exceptions in hot path.
+* **Tests (targeted):** Unit tests for filters (Kalman/One-Euro parameters), VIP-locking (30 Frames), and OSC queue drop policy; simple benchmarks for E2E latency.
+* **No Magic Numbers:** Avoid "lucky numbers" in code. Use `constexpr` constants or a central `Config` JSON for runtime-tunable parameters (filter coefficients, timeouts).
+* **Order and Hygiene:** No ad-hoc scripts or tests in the source root; helper scripts under `scripts/`, tests under `tests/`, docs under `docs/`.
