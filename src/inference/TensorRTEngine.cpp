@@ -99,9 +99,15 @@ bool TensorRTEngine::load(const Config& config) {
     allocateBuffers();
 
     loaded_ = true;
+
+    // Log tensor info (with bounds checking)
     core::Logger::info("TensorRT engine loaded successfully");
-    core::Logger::info("  Input: ", inputInfo_.name, " [", inputInfo_.dims[0], "x",
-                       inputInfo_.dims[1], "x", inputInfo_.dims[2], "x", inputInfo_.dims[3], "]");
+    if (inputInfo_.dims.size() >= 4) {
+        core::Logger::info("  Input: ", inputInfo_.name, " [", inputInfo_.dims[0], "x",
+                           inputInfo_.dims[1], "x", inputInfo_.dims[2], "x", inputInfo_.dims[3], "]");
+    } else {
+        core::Logger::info("  Input: ", inputInfo_.name, " size=", inputInfo_.size);
+    }
     core::Logger::info("  Output: ", outputInfo_.name, " size=", outputInfo_.size);
 
     return true;
@@ -231,11 +237,22 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
 }
 
 void TensorRTEngine::extractTensorInfo() {
+    if (!engine_) {
+        core::Logger::error("extractTensorInfo: engine_ is null!");
+        return;
+    }
+
     // TensorRT 8.5+ API uses getNbIOTensors instead of getNbBindings
     int numTensors = engine_->getNbIOTensors();
+    core::Logger::info("TensorRT engine has ", numTensors, " IO tensors");
 
     for (int i = 0; i < numTensors; ++i) {
         const char* name = engine_->getIOTensorName(i);
+        if (!name) {
+            core::Logger::warn("  Tensor ", i, ": name is null, skipping");
+            continue;
+        }
+
         auto dims = engine_->getTensorShape(name);
         auto mode = engine_->getTensorIOMode(name);
         bool isInput = (mode == nvinfer1::TensorIOMode::kINPUT);
@@ -245,10 +262,14 @@ void TensorRTEngine::extractTensorInfo() {
         info.isInput = isInput;
         info.size = 1;
 
+        core::Logger::info("  Tensor ", i, ": ", name, " (", isInput ? "INPUT" : "OUTPUT", ") dims=[");
         for (int d = 0; d < dims.nbDims; ++d) {
             info.dims.push_back(dims.d[d]);
-            info.size *= dims.d[d];
+            if (dims.d[d] > 0) {
+                info.size *= dims.d[d];
+            }
         }
+        core::Logger::info("    ] size=", info.size);
 
         if (isInput) {
             inputInfo_ = info;
@@ -259,11 +280,21 @@ void TensorRTEngine::extractTensorInfo() {
 }
 
 void TensorRTEngine::allocateBuffers() {
+    if (inputInfo_.size == 0 || outputInfo_.size == 0) {
+        core::Logger::error("Cannot allocate buffers: input or output size is 0");
+        return;
+    }
+
     size_t inputBytes = inputInfo_.size * sizeof(float);
     size_t outputBytes = outputInfo_.size * sizeof(float);
 
-    cudaMalloc(&d_input_, inputBytes);
-    cudaMalloc(&d_output_, outputBytes);
+    cudaError_t err1 = cudaMalloc(&d_input_, inputBytes);
+    cudaError_t err2 = cudaMalloc(&d_output_, outputBytes);
+
+    if (err1 != cudaSuccess || err2 != cudaSuccess) {
+        core::Logger::error("CUDA malloc failed: ", cudaGetErrorString(err1), " / ", cudaGetErrorString(err2));
+        return;
+    }
 
     core::Logger::info("CUDA buffers allocated: input=", inputBytes, " output=", outputBytes);
 }
@@ -285,13 +316,31 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         return false;
     }
 
+    if (!context_) {
+        core::Logger::error("Execution context is null");
+        return false;
+    }
+
     // Copy input to GPU
     size_t inputBytes = inputInfo_.size * sizeof(float);
-    cudaMemcpy(d_input_, inputData, inputBytes, cudaMemcpyHostToDevice);
+    cudaError_t err = cudaMemcpy(d_input_, inputData, inputBytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        core::Logger::error("CUDA memcpy input failed: ", cudaGetErrorString(err));
+        return false;
+    }
+
+    // TensorRT 8.5+: Set tensor addresses
+    if (!context_->setTensorAddress(inputInfo_.name.c_str(), d_input_)) {
+        core::Logger::error("Failed to set input tensor address");
+        return false;
+    }
+    if (!context_->setTensorAddress(outputInfo_.name.c_str(), d_output_)) {
+        core::Logger::error("Failed to set output tensor address");
+        return false;
+    }
 
     // Run inference
-    void* bindings[] = {d_input_, d_output_};
-    bool success = context_->executeV2(bindings);
+    bool success = context_->enqueueV3(nullptr);
 
     if (!success) {
         core::Logger::error("Inference failed");
