@@ -155,10 +155,9 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
         return false;
     }
 
-    // Create network with explicit batch
-    const auto explicitBatch = 1U << static_cast<uint32_t>(
-        nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-    auto network = builder->createNetworkV2(explicitBatch);
+    // Create network with explicit batch (TensorRT 8.5+ default)
+    // Note: kEXPLICIT_BATCH is deprecated in 8.5+, explicit batch is now default
+    auto network = builder->createNetworkV2(0);
     if (!network) {
         core::Logger::error("Failed to create network");
         delete builder;
@@ -232,12 +231,14 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
 }
 
 void TensorRTEngine::extractTensorInfo() {
-    int numBindings = engine_->getNbBindings();
+    // TensorRT 8.5+ API uses getNbIOTensors instead of getNbBindings
+    int numTensors = engine_->getNbIOTensors();
 
-    for (int i = 0; i < numBindings; ++i) {
-        const char* name = engine_->getBindingName(i);
-        auto dims = engine_->getBindingDimensions(i);
-        bool isInput = engine_->bindingIsInput(i);
+    for (int i = 0; i < numTensors; ++i) {
+        const char* name = engine_->getIOTensorName(i);
+        auto dims = engine_->getTensorShape(name);
+        auto mode = engine_->getTensorIOMode(name);
+        bool isInput = (mode == nvinfer1::TensorIOMode::kINPUT);
 
         TensorInfo info;
         info.name = name;
@@ -310,7 +311,14 @@ bool TensorRTEngine::inferAsync(void** bindings, void* stream) {
     }
 
     cudaStream_t cudaStream = stream ? static_cast<cudaStream_t>(stream) : nullptr;
-    return context_->enqueueV2(bindings, cudaStream, nullptr);
+
+    // TensorRT 8.5+: Use setTensorAddress + enqueueV3
+    // Set input tensor address
+    context_->setTensorAddress(inputInfo_.name.c_str(), bindings[0]);
+    // Set output tensor address
+    context_->setTensorAddress(outputInfo_.name.c_str(), bindings[1]);
+
+    return context_->enqueueV3(cudaStream);
 }
 
 } // namespace inference

@@ -249,11 +249,11 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 _handTracker->predict(dt);
                 _handTracker->update(palm3D);
 
-                // Gesture FSM update - convert landmarks to vector
-                std::vector<Point3D> landmarkPoints;
+                // Gesture FSM update - convert landmarks to expected format
+                std::vector<TrackingResult::NormalizedPoint> landmarkPoints;
                 landmarkPoints.reserve(21);
                 for (const auto& lm : landmarks->landmarks) {
-                    landmarkPoints.push_back({lm.x, lm.y, lm.z});
+                    landmarkPoints.push_back(lm);
                 }
                 auto gesture = _gestureFSM->update(landmarkPoints);
 
