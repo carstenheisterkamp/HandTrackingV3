@@ -29,8 +29,8 @@ public:
         std::string modelPath = "models/palm_detection.onnx";
         int inputWidth = 192;
         int inputHeight = 192;
-        float scoreThreshold = 0.3f;  // Lowered from 0.5 for better detection
-        float nmsThreshold = 0.3f;
+        float scoreThreshold = 0.6f;  // Increased from 0.3 to reduce false positives (faces)
+        float nmsThreshold = 0.4f;
     };
 
     PalmDetector();

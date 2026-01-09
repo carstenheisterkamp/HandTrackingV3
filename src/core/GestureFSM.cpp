@@ -212,41 +212,66 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
 
 bool GestureFSM::isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
                                    int mcp, int pip, int dip, int tip) const {
-    // Use 2D distance only (Z is often 0 or unreliable without stereo depth)
+    // ═══════════════════════════════════════════════════════════
+    // Standard Gesture Recognition Heuristics:
     //
     // A finger is EXTENDED if:
-    // 1. The tip is significantly farther from wrist than PIP (stretched out)
-    // 2. The finger is relatively straight (angle check via distances)
+    // 1. The angle at PIP joint is relatively straight (>140°)
+    // 2. The tip is farther from wrist than PIP (2D projection)
+    // 3. Tip Y is in same direction as "up" relative to MCP
     //
     // A finger is CURLED if:
-    // - Tip is close to or behind PIP relative to wrist
-    // - The DIP->TIP segment folds back towards palm
+    // - PIP angle is bent (<120°)
+    // - Tip folds back towards palm
+    // ═══════════════════════════════════════════════════════════
 
     const auto& wrist = landmarks[LandmarkIndices::WRIST];
     const auto& tipPt = landmarks[tip];
-    const auto& pipPt = landmarks[pip];
     const auto& dipPt = landmarks[dip];
+    const auto& pipPt = landmarks[pip];
     const auto& mcpPt = landmarks[mcp];
 
+    // Method 1: Angle at PIP joint
+    // Vector from PIP to MCP
+    float v1x = mcpPt.x - pipPt.x;
+    float v1y = mcpPt.y - pipPt.y;
+    // Vector from PIP to DIP
+    float v2x = dipPt.x - pipPt.x;
+    float v2y = dipPt.y - pipPt.y;
+
+    // Dot product and magnitudes
+    float dot = v1x * v2x + v1y * v2y;
+    float mag1 = std::sqrt(v1x * v1x + v1y * v1y);
+    float mag2 = std::sqrt(v2x * v2x + v2y * v2y);
+
+    float angleRad = 0.0f;
+    if (mag1 > 0.001f && mag2 > 0.001f) {
+        float cosAngle = dot / (mag1 * mag2);
+        cosAngle = std::max(-1.0f, std::min(1.0f, cosAngle));  // Clamp
+        angleRad = std::acos(cosAngle);
+    }
+    float angleDeg = angleRad * 180.0f / 3.14159f;
+
+    // Finger is straight if angle > 140° (cosine angle is the inner angle)
+    // Note: The angle we calculate is the INNER angle at PIP
+    // Extended finger: ~180° (straight) → inner angle ~180°
+    // Curled finger: ~90° (bent) → inner angle ~90°
+    bool angleExtended = angleDeg > 140.0f;
+
+    // Method 2: Distance check (tip farther than PIP from wrist)
     float tipToWrist = distance2D(tipPt, wrist);
     float pipToWrist = distance2D(pipPt, wrist);
+    bool distanceExtended = tipToWrist > pipToWrist * 1.1f;
 
-    // Primary check: Tip must be farther from wrist than PIP
-    // For a curled finger, tip folds back and gets closer to wrist than PIP
-    bool tipFartherThanPip = tipToWrist > pipToWrist * 1.15f;
-
-    // Secondary check: Finger length ratio
-    // Extended finger: tip->mcp distance is significant
-    // Curled finger: tip comes back close to mcp
+    // Method 3: Tip extends beyond MCP in finger direction
+    // For most orientations, extended finger tip is farther from palm
     float tipToMcp = distance2D(tipPt, mcpPt);
-    float dipToMcp = distance2D(dipPt, mcpPt);
+    float pipToMcp = distance2D(pipPt, mcpPt);
+    bool lengthExtended = tipToMcp > pipToMcp * 1.1f;
 
-    // For extended finger, tip should be significantly farther from MCP than DIP
-    bool straightFinger = tipToMcp > dipToMcp * 1.2f;
-
-    // Both conditions must be met for extended finger
-    // This is stricter than before (was OR, now AND)
-    return tipFartherThanPip && straightFinger;
+    // Combined check: At least 2 of 3 methods must agree
+    int votes = (angleExtended ? 1 : 0) + (distanceExtended ? 1 : 0) + (lengthExtended ? 1 : 0);
+    return votes >= 2;
 }
 
 float GestureFSM::distance(const TrackingResult::NormalizedPoint& a,
@@ -278,26 +303,48 @@ float GestureFSM::getPinchDistance(const std::vector<TrackingResult::NormalizedP
 }
 
 bool GestureFSM::isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
-    // Thumb is special - check if tip is farther from palm center than IP joint
-    // Also check if thumb is spread away from the hand
+    // Thumb uses different heuristics because it's oriented differently
+    // Check if thumb tip is spread away from palm and index finger
     using LI = LandmarkIndices;
 
-    // Palm center approximation (between wrist and middle MCP)
-    TrackingResult::NormalizedPoint palmCenter;
-    palmCenter.x = (landmarks[LI::WRIST].x + landmarks[LI::MIDDLE_MCP].x) / 2.0f;
-    palmCenter.y = (landmarks[LI::WRIST].y + landmarks[LI::MIDDLE_MCP].y) / 2.0f;
-    palmCenter.z = 0.0f;
+    const auto& thumbTip = landmarks[LI::THUMB_TIP];
+    const auto& thumbIP = landmarks[LI::THUMB_IP];
+    const auto& thumbMCP = landmarks[LI::THUMB_MCP];
+    const auto& indexMCP = landmarks[LI::INDEX_MCP];
+    const auto& wrist = landmarks[LI::WRIST];
 
-    float tipToPalm = distance2D(landmarks[LI::THUMB_TIP], palmCenter);
-    float ipToPalm = distance2D(landmarks[LI::THUMB_IP], palmCenter);
-    float mcpToPalm = distance2D(landmarks[LI::THUMB_CMC], palmCenter);
+    // Method 1: Distance from index MCP (spread check)
+    // Extended thumb is farther from index finger base
+    float thumbTipToIndex = distance2D(thumbTip, indexMCP);
+    float thumbIPToIndex = distance2D(thumbIP, indexMCP);
+    bool spreadFromIndex = thumbTipToIndex > thumbIPToIndex * 1.15f;
 
-    // Thumb extended if tip is significantly farther from palm than IP
-    // AND the thumb is spread outward (tip farther than MCP from palm)
-    bool extended = tipToPalm > ipToPalm * 1.2f;
-    bool spreadOut = tipToPalm > mcpToPalm * 1.3f;
+    // Method 2: Distance from wrist (extension check)
+    float thumbTipToWrist = distance2D(thumbTip, wrist);
+    float thumbMCPToWrist = distance2D(thumbMCP, wrist);
+    bool extendedFromWrist = thumbTipToWrist > thumbMCPToWrist * 1.3f;
 
-    return extended && spreadOut;
+    // Method 3: Angle at IP joint
+    float v1x = thumbMCP.x - thumbIP.x;
+    float v1y = thumbMCP.y - thumbIP.y;
+    float v2x = thumbTip.x - thumbIP.x;
+    float v2y = thumbTip.y - thumbIP.y;
+
+    float dot = v1x * v2x + v1y * v2y;
+    float mag1 = std::sqrt(v1x * v1x + v1y * v1y);
+    float mag2 = std::sqrt(v2x * v2x + v2y * v2y);
+
+    bool angleExtended = false;
+    if (mag1 > 0.001f && mag2 > 0.001f) {
+        float cosAngle = dot / (mag1 * mag2);
+        cosAngle = std::max(-1.0f, std::min(1.0f, cosAngle));
+        float angleDeg = std::acos(cosAngle) * 180.0f / 3.14159f;
+        angleExtended = angleDeg > 130.0f;  // Thumb bends less than other fingers
+    }
+
+    // At least 2 of 3 methods must agree
+    int votes = (spreadFromIndex ? 1 : 0) + (extendedFromWrist ? 1 : 0) + (angleExtended ? 1 : 0);
+    return votes >= 2;
 }
 
 bool GestureFSM::isVulcanSpread(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {

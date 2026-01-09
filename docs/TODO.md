@@ -45,26 +45,41 @@ Zum ersten Mal haben wir:
 ### Phase 2.7: Gesten-Erkennung Fix - 🔄 IN PROGRESS
 **Problem:** Immer nur "FIVE" angezeigt (nicht "PALM" - das gibt es nicht mehr)
 
+**Ursache identifiziert:**
+- Ohne Z-Koordinaten kann 2D-Distanz nicht zwischen "Finger zeigt zur Kamera" und "gebogen" unterscheiden
+- Die Thresholds waren "magische Zahlen" ohne Kalibrierung
+
 **Was gefixt wurde (2026-01-09):**
-- ✅ `isFingerExtended()` Logik komplett überarbeitet:
-  - AND statt OR für beide Checks (strenger)
-  - Threshold von 1.05x auf 1.15x erhöht
-  - Neuer Check: tip->mcp > dip->mcp * 1.2
+- ✅ `isFingerExtended()` komplett neu mit Standard-Heuristiken:
+  - **Winkelberechnung** am PIP-Gelenk (>140° = gestreckt)
+  - **Distanz-Check** (Tip weiter von Wrist als PIP)
+  - **Längen-Check** (Tip weiter von MCP als PIP)
+  - **Voting-System:** 2 von 3 Methoden müssen zustimmen
 - ✅ `isThumbExtended()` verbessert:
-  - Threshold von 1.1x auf 1.2x erhöht
-  - Zusätzlicher "spread out" Check (1.3x)
-- ✅ Debug-Logs für Finger-Extension Werte (alle 60 Frames)
+  - Spread-Check (Abstand zu Index MCP)
+  - Extension-Check (Abstand zu Wrist)
+  - Winkel am IP-Gelenk
+  - Voting: 2 von 3
 
 **Nächster Schritt:** Build & Test ob Gesten jetzt korrekt erkannt werden
 
-### Phase 2.8: False Positive Filter - TEILWEISE FUNKTIONIERT
+### Phase 2.8: False Positive Filter - 🔄 VERBESSERT
 **Problem:** Gesicht wird als Hand erkannt (nur ohne Hände im Bild)
 
-**Beobachtung:**
-- ✅ False Positives verschwinden sobald eine echte Hand im Bild ist
-- ⚠️ Ohne Hände wird Gesicht manchmal erkannt
+**Ursache identifiziert:**
+- `scoreThreshold = 0.3f` war viel zu niedrig!
+- MediaPipe ist auf Hautfarbe trainiert → Gesicht = ähnliche Farbe
+- Keypoint-Konsistenz wurde nicht geprüft
 
-**Nächster Schritt:** Score-Threshold erhöhen oder Face-Region ausschließen
+**Was gefixt wurde (2026-01-09):**
+- ✅ Score-Threshold auf **0.6** erhöht (von 0.3)
+- ✅ NMS-Threshold auf **0.4** erhöht (von 0.3)
+- ✅ **Keypoint-Konsistenz-Filter** hinzugefügt:
+  - Prüft Abstand Wrist↔Middle-Base
+  - Echte Hände: 15-150% der Palm-Breite
+  - Gesichter: Keypoints sind zufällig/geclustert
+
+**Nächster Schritt:** Build & Test ob Gesichter jetzt gefiltert werden
 
 
 ### Phase 2.1: TensorRT Engine Wrapper

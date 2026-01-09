@@ -404,12 +404,38 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
             det.keypoints[k * 2 + 1] = anchors_[i][1] + kpy;
         }
 
-        // Calculate rotation from keypoints (wrist to middle finger base)
+        // ═══════════════════════════════════════════════════════════
+        // Filter 4: Keypoint consistency check for palm detection
+        // Real palms have a specific keypoint pattern:
+        // - KP0 = wrist, KP2 = middle finger base
+        // - These should be separated by a reasonable distance
+        // - Faces have random/clustered keypoints
+        // ═══════════════════════════════════════════════════════════
         float kp0_x = det.keypoints[0];  // Wrist
         float kp0_y = det.keypoints[1];
         float kp2_x = det.keypoints[4];  // Middle finger base
         float kp2_y = det.keypoints[5];
 
+        float keypointDist = std::sqrt(
+            (kp2_x - kp0_x) * (kp2_x - kp0_x) +
+            (kp2_y - kp0_y) * (kp2_y - kp0_y)
+        );
+
+        // Keypoint distance should be proportional to palm size
+        // For a real palm, wrist-to-middle-base is roughly 30-60% of palm width
+        float expectedMinDist = det.width * 0.15f;
+        float expectedMaxDist = det.width * 1.5f;
+
+        if (keypointDist < expectedMinDist || keypointDist > expectedMaxDist) {
+            static int rejectCount4 = 0;
+            if (++rejectCount4 % 100 == 1) {
+                core::Logger::info("🚫 Filter4 reject: kp_dist=", keypointDist,
+                                   " expected=[", expectedMinDist, ", ", expectedMaxDist, "]");
+            }
+            continue;  // Keypoints don't match palm pattern
+        }
+
+        // Calculate rotation from keypoints (wrist to middle finger base)
         det.rotation = std::atan2(kp2_y - kp0_y, kp2_x - kp0_x);
 
         detections.push_back(det);
