@@ -15,6 +15,13 @@
 #include "core/SystemMonitor.hpp"
 #include "core/HandTracker.hpp"
 #include "core/GestureFSM.hpp"
+#include "core/StereoDepth.hpp"
+
+#ifdef ENABLE_TENSORRT
+#include "inference/PalmDetector.hpp"
+#include "inference/HandLandmark.hpp"
+#endif
+
 #include <chrono>
 #include <algorithm>
 #include <opencv2/imgproc.hpp>
@@ -35,9 +42,31 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
       _oscQueue(std::move(oscQueue)),
       _running(false) {
 
-    // V3: Initialize new components (will be used in Phase 2+)
+    // V3: Initialize tracking components
     _handTracker = std::make_unique<HandTracker>();
     _gestureFSM = std::make_unique<GestureFSM>();
+    _stereoDepth = std::make_unique<StereoDepth>();
+
+#ifdef ENABLE_TENSORRT
+    // V3 Phase 2: Initialize TensorRT inference
+    _palmDetector = std::make_unique<inference::PalmDetector>();
+    _handLandmark = std::make_unique<inference::HandLandmark>();
+
+    inference::PalmDetector::Config palmConfig;
+    palmConfig.modelPath = "models/palm_detection.onnx";
+
+    inference::HandLandmark::Config landmarkConfig;
+    landmarkConfig.modelPath = "models/hand_landmark.onnx";
+
+    if (_palmDetector->init(palmConfig) && _handLandmark->init(landmarkConfig)) {
+        _inferenceInitialized = true;
+        Logger::info("TensorRT inference initialized successfully");
+    } else {
+        Logger::warn("TensorRT inference initialization failed - running in preview-only mode");
+    }
+#else
+    Logger::info("TensorRT not available - running in preview-only mode");
+#endif
 
     // MJPEG Server for debug preview
     _mjpegServer = std::make_unique<net::MjpegServer>(8080);
@@ -166,32 +195,87 @@ void ProcessingLoop::processFrame(Frame* frame) {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // V3 Phase 2 (TODO): TensorRT Palm Detection + Hand Landmarks
+    // V3 Phase 2: TensorRT Palm Detection + Hand Landmarks
     // ═══════════════════════════════════════════════════════════
-    //
-    // auto palmDetection = _palmDetector->detect(frame);
-    // if (palmDetection) {
-    //     auto landmarks = _handLandmark->infer(frame, *palmDetection);
-    //     if (landmarks) {
-    //         // Phase 3: Get depth at palm center
-    //         float depth = _stereoDepth->getDepthAtPoint(...);
-    //         Point3D palm3D = {palmX, palmY, depth};
-    //
-    //         // Kalman filter
-    //         _handTracker->predict(dt);
-    //         _handTracker->update(palm3D);
-    //
-    //         // Gesture FSM
-    //         auto gesture = _gestureFSM->update(landmarks->landmarks);
-    //
-    //         // Send to OSC
-    //         TrackingResult result;
-    //         result.palmPosition = _handTracker->getPredicted();
-    //         result.velocity = _handTracker->getVelocity();
-    //         result.gesture = gesture;
-    //         _oscQueue->try_push(result);
-    //     }
-    // }
+
+#ifdef ENABLE_TENSORRT
+    if (_inferenceInitialized) {
+        // Palm Detection
+        auto palmDetection = _palmDetector->detect(
+            frame->data.get(),
+            static_cast<int>(frame->width),
+            static_cast<int>(frame->height)
+        );
+
+        if (palmDetection) {
+            // Hand Landmark Inference
+            auto landmarks = _handLandmark->infer(
+                frame->data.get(),
+                static_cast<int>(frame->width),
+                static_cast<int>(frame->height),
+                *palmDetection
+            );
+
+            if (landmarks) {
+                // Calculate delta time for Kalman filter
+                static auto lastTime = std::chrono::steady_clock::now();
+                auto currentTime = std::chrono::steady_clock::now();
+                float dt = std::chrono::duration<float>(currentTime - lastTime).count();
+                lastTime = currentTime;
+
+                // Get palm center as 3D point (Z from depth if available, else estimated)
+                float palmZ = 500.0f;  // Default 50cm
+
+                // Phase 3: Get depth at palm center (when stereo enabled)
+                if (frame->hasStereoData && _stereoDepth) {
+                    int palmU = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
+                    int palmV = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
+                    palmZ = _stereoDepth->getDepthAtPoint(
+                        frame->monoLeftData.get(),
+                        frame->monoRightData.get(),
+                        static_cast<int>(frame->monoWidth),
+                        static_cast<int>(frame->monoHeight),
+                        palmU, palmV
+                    );
+                }
+
+                Point3D palm3D = {
+                    landmarks->palmCenterX,
+                    landmarks->palmCenterY,
+                    palmZ
+                };
+
+                // Kalman filter update
+                _handTracker->predict(dt);
+                _handTracker->update(palm3D);
+
+                // Gesture FSM update - convert landmarks to vector
+                std::vector<Point3D> landmarkPoints;
+                landmarkPoints.reserve(21);
+                for (const auto& lm : landmarks->landmarks) {
+                    landmarkPoints.push_back({lm.x, lm.y, lm.z});
+                }
+                auto gesture = _gestureFSM->update(landmarkPoints);
+
+                // Prepare tracking result for OSC
+                TrackingResult result;
+                result.palmPosition = _handTracker->getPosition();
+                result.velocity = _handTracker->getVelocity();
+                result.gesture = gesture;
+                result.vipLocked = _handTracker->isLocked();
+                result.timestamp = std::chrono::steady_clock::now();
+
+                // Copy landmarks
+                for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i) {
+                    result.landmarks.push_back(landmarks->landmarks[i]);
+                }
+
+                // Send to OSC queue
+                _oscQueue->try_push(result);
+            }
+        }
+    }
+#endif
 
     // ═══════════════════════════════════════════════════════════
     // Timing

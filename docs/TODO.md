@@ -1,34 +1,43 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 1 - Sensor-Only Pipeline
+> **Aktuelle Phase:** Phase 2 - TensorRT Inference
 > **Letztes Update:** 2026-01-09
-> **Ziel:** OAK-D als reiner Sensor, alle NNs auf Jetson
+> **Ziel:** Hand-NNs auf Jetson mit TensorRT
 
 ---
 
 ## 🎯 Aktuelle Aufgabe
 
-### Phase 1.1: PipelineManager auf Sensor-Only umbauen
-- [x] TODO.md erstellen
-- [x] OPTIMAL_WORKFLOW_V3.md dokumentieren
-- [x] **DONE:** PipelineManager.cpp angepasst:
-  - [x] Mono Left Camera (THE_400_P @ 60fps) hinzugefügt
-  - [x] Mono Right Camera (THE_400_P @ 60fps) hinzugefügt
-  - [x] RGB Preview auf 640×360 NV12 @ 60fps umgestellt
-  - [x] Sync Node für alle drei Streams
-  - [x] NN-Code entfernt (läuft auf Jetson)
-- [x] InputLoop.cpp für V3 Sync Mode angepasst
-- [x] PipelineManager.hpp: Config erweitert (monoWidth/monoHeight)
-- [x] main.cpp: Config auf 60fps umgestellt
-- [x] Types.hpp: V3 Konstanten und Typen hinzugefügt
-- [ ] **NEXT:** Auf Jetson deployen und testen: 60 FPS verifizieren
+### Phase 2.1: TensorRT Engine Wrapper
+- [x] TensorRTEngine.hpp/.cpp erstellen
+- [x] Engine laden/erstellen (.onnx → .engine)
+- [x] Inference Methode (Input → Output Buffer)
+- [x] CUDA Memory Management
+
+### Phase 2.2: Palm Detection
+- [x] PalmDetector.hpp/.cpp erstellen
+- [ ] ONNX Model beschaffen/konvertieren
+- [x] NV12 → RGB Preprocessing (GPU)
+- [x] Post-Processing (BBox, Score, Anchors)
+
+### Phase 2.3: Hand Landmark
+- [x] HandLandmark.hpp/.cpp erstellen
+- [x] ROI Extraction aus Palm Detection
+- [x] 21 Landmarks Output Parsing
+- [x] Unletterbox Koordinaten
+
+### Phase 2.4: ProcessingLoop Integration
+- [x] PalmDetector + HandLandmark in ProcessingLoop einbinden
+- [x] HandTracker + GestureFSM integrieren
+- [ ] ONNX Models beschaffen/konvertieren
+- [ ] Test: 30+ FPS mit NNs verifizieren
 
 ---
 
 ## 📅 Roadmap
 
-### Phase 1: Sensor-Only Pipeline ⬅️ AKTUELL
-**Ziel:** OAK-D liefert nur Frames, keine NNs
+### ✅ Phase 1: Sensor-Only Pipeline - ERLEDIGT
+**Ergebnis:** 30 FPS stabil auf Jetson
 
 | Task | Status | Notes |
 |------|--------|-------|

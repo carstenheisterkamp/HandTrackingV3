@@ -19,6 +19,12 @@
 namespace core {
     class HandTracker;
     class GestureFSM;
+    class StereoDepth;
+}
+
+namespace inference {
+    class PalmDetector;
+    class HandLandmark;
 }
 
 namespace core {
@@ -57,6 +63,12 @@ private:
     // V3 Components (Phase 2+)
     std::unique_ptr<HandTracker> _handTracker;
     std::unique_ptr<GestureFSM> _gestureFSM;
+    std::unique_ptr<StereoDepth> _stereoDepth;
+
+    // V3 Inference (TensorRT)
+    std::unique_ptr<inference::PalmDetector> _palmDetector;
+    std::unique_ptr<inference::HandLandmark> _handLandmark;
+    bool _inferenceInitialized = false;
 
     // Debug Preview
     std::unique_ptr<net::MjpegServer> _mjpegServer;

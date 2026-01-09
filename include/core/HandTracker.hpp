@@ -62,6 +62,18 @@ public:
     [[nodiscard]] bool isVipLocked() const { return vipLocked_; }
 
     /**
+     * Alias for isVipLocked (for API compatibility)
+     */
+    [[nodiscard]] bool isLocked() const { return vipLocked_; }
+
+    /**
+     * Get current position (state without lookahead)
+     */
+    [[nodiscard]] Point3D getPosition() const {
+        return {state_[0], state_[1], state_[2]};
+    }
+
+    /**
      * Get number of consecutive tracked frames
      */
     [[nodiscard]] int getConsecutiveFrames() const { return consecutiveFrames_; }

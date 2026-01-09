@@ -42,6 +42,19 @@ else()
     message(WARNING "CUDA Toolkit not found. Zero-copy optimizations will be disabled.")
 endif()
 
+# TensorRT Support (for V3 inference on Jetson)
+find_library(NVINFER_LIB nvinfer PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
+find_library(NVONNXPARSER_LIB nvonnxparser PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h PATHS /usr/include/aarch64-linux-gnu /usr/local/include)
+
+if(NVINFER_LIB AND NVONNXPARSER_LIB AND TENSORRT_INCLUDE_DIR)
+    message(STATUS "TensorRT found: ${NVINFER_LIB}")
+    set(TENSORRT_FOUND TRUE)
+else()
+    message(WARNING "TensorRT not found. V3 inference will be disabled.")
+    set(TENSORRT_FOUND FALSE)
+endif()
+
 # Shared Libraries erzwingen, bevor Pakete geladen werden
 set(BUILD_SHARED_LIBS ON CACHE BOOL "Build shared libraries" FORCE)
 set(DEPTHAI_BUILD_SHARED_LIBS ON CACHE BOOL "Build depthai shared libraries" FORCE)
@@ -124,6 +137,9 @@ add_executable(HandTrackingService src/main.cpp
         src/core/HandTracker.cpp
         src/core/GestureFSM.cpp
         src/core/StereoDepth.cpp
+        src/inference/TensorRTEngine.cpp
+        src/inference/PalmDetector.cpp
+        src/inference/HandLandmark.cpp
         src/math/Filters.cpp
         src/net/OscSender.cpp
         src/net/MjpegServer.cpp
@@ -141,6 +157,9 @@ add_executable(HandTrackingService src/main.cpp
         include/core/HandTracker.hpp
         include/core/GestureFSM.hpp
         include/core/StereoDepth.hpp
+        include/inference/TensorRTEngine.hpp
+        include/inference/PalmDetector.hpp
+        include/inference/HandLandmark.hpp
         include/math/Filters.hpp
         include/net/OscSender.hpp
         include/net/MjpegServer.hpp)
@@ -149,6 +168,7 @@ target_include_directories(HandTrackingService PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         ${LIBLO_INCLUDE_DIRS}
         ${OpenCV_INCLUDE_DIRS}
+        ${TENSORRT_INCLUDE_DIR}
 )
 
 # Linken
@@ -163,6 +183,11 @@ target_link_libraries(HandTrackingService PRIVATE
 if(CUDAToolkit_FOUND)
     target_compile_definitions(HandTrackingService PRIVATE ENABLE_CUDA)
     target_link_libraries(HandTrackingService PRIVATE CUDA::cudart CUDA::nppicc)
+endif()
+
+if(TENSORRT_FOUND)
+    target_compile_definitions(HandTrackingService PRIVATE ENABLE_TENSORRT)
+    target_link_libraries(HandTrackingService PRIVATE ${NVINFER_LIB} ${NVONNXPARSER_LIB})
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
