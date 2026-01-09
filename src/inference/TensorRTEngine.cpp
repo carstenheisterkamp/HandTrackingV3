@@ -186,14 +186,21 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
     }
 
     // Parse ONNX model
+    core::Logger::info("Parsing ONNX file: ", onnxPath);
     if (!parser->parseFromFile(onnxPath.c_str(),
             static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
         core::Logger::error("Failed to parse ONNX file");
+        // Print parser errors
+        for (int i = 0; i < parser->getNbErrors(); ++i) {
+            core::Logger::error("  ONNX Parser Error: ", parser->getError(i)->desc());
+        }
         delete parser;
         delete network;
         delete builder;
         return false;
     }
+    core::Logger::info("ONNX parsed successfully. Network has ", network->getNbInputs(),
+                      " inputs, ", network->getNbOutputs(), " outputs");
 
     // Create builder config
     auto config = builder->createBuilderConfig();
@@ -389,6 +396,67 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         err = cudaMemcpy(outputData, d_outputs_[0], outputBytes, cudaMemcpyDeviceToHost);
         if (err != cudaSuccess) {
             core::Logger::error("CUDA memcpy output failed: ", cudaGetErrorString(err));
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool TensorRTEngine::inferMultiOutput(const void* inputData, std::vector<void*>& outputBuffers) {
+    if (!loaded_) {
+        core::Logger::error("Engine not loaded");
+        return false;
+    }
+
+    if (!context_) {
+        core::Logger::error("Execution context is null");
+        return false;
+    }
+
+    if (outputBuffers.size() != outputInfos_.size()) {
+        core::Logger::error("Output buffer count mismatch: expected ", outputInfos_.size(),
+                           ", got ", outputBuffers.size());
+        return false;
+    }
+
+    // Copy input to GPU
+    size_t inputBytes = inputInfo_.size * sizeof(float);
+    cudaError_t err = cudaMemcpy(d_input_, inputData, inputBytes, cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        core::Logger::error("CUDA memcpy input failed: ", cudaGetErrorString(err));
+        return false;
+    }
+
+    // TensorRT 10.x: Set ALL tensor addresses
+    if (!context_->setTensorAddress(inputInfo_.name.c_str(), d_input_)) {
+        core::Logger::error("Failed to set input tensor address: ", inputInfo_.name);
+        return false;
+    }
+
+    for (size_t i = 0; i < outputInfos_.size(); ++i) {
+        if (!context_->setTensorAddress(outputInfos_[i].name.c_str(), d_outputs_[i])) {
+            core::Logger::error("Failed to set output tensor address: ", outputInfos_[i].name);
+            return false;
+        }
+    }
+
+    // Run inference
+    bool success = context_->enqueueV3(nullptr);
+    if (!success) {
+        core::Logger::error("Inference failed");
+        return false;
+    }
+
+    // Synchronize
+    cudaStreamSynchronize(nullptr);
+
+    // Copy ALL outputs to host
+    for (size_t i = 0; i < outputInfos_.size(); ++i) {
+        size_t outputBytes = outputInfos_[i].size * sizeof(float);
+        err = cudaMemcpy(outputBuffers[i], d_outputs_[i], outputBytes, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            core::Logger::error("CUDA memcpy output ", i, " failed: ", cudaGetErrorString(err));
             return false;
         }
     }

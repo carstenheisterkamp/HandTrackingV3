@@ -35,15 +35,29 @@ bool HandLandmark::init(const Config& config) {
         core::Logger::error("HandLandmark: Failed to load TensorRT engine");
         return false;
     }
+    // Model has 4 outputs:
+    // Output 0 (Identity): [1, 63] - landmarks (21 × 3)
+    // Output 1 (Identity_1): [1, 1] - handedness
+    // Output 2 (Identity_2): [1, 1] - presence
+    // Output 3 (Identity_3): [1, 63] - world landmarks
+    auto& outputs = engine_->getOutputInfos();
+    core::Logger::info("HandLandmark: ", outputs.size(), " outputs");
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        core::Logger::info("  Output ", i, ": ", outputs[i].name, " size=", outputs[i].size);
+    }
 
-    // Allocate buffers
-    inputBuffer_.resize(3 * config_.inputWidth * config_.inputHeight);
-    outputBuffer_.resize(engine_->getOutputInfo().size);
+    // Allocate buffers - NHWC format for input
+    inputBuffer_.resize(config_.inputWidth * config_.inputHeight * 3);  // HWC
+
+    // Allocate output buffers
+    landmarksBuffer_.resize(63);    // 21 landmarks × 3 coords
+    handednessBuffer_.resize(1);
+    presenceBuffer_.resize(1);
+    worldLandmarksBuffer_.resize(63);
 
     initialized_ = true;
     core::Logger::info("HandLandmark initialized");
-    core::Logger::info("  Input: ", config_.inputWidth, "x", config_.inputHeight);
-    core::Logger::info("  Output size: ", engine_->getOutputInfo().size);
+    core::Logger::info("  Input: ", config_.inputWidth, "x", config_.inputHeight, " (NHWC)");
 
     return true;
 }
@@ -61,14 +75,21 @@ std::optional<HandLandmark::Result> HandLandmark::infer(
     // Extract ROI based on palm detection
     extractROI(nv12Data, frameWidth, frameHeight, palm);
 
-    // Run inference
-    if (!engine_->infer(inputBuffer_.data(), outputBuffer_.data())) {
+    // Run inference with multiple outputs
+    std::vector<void*> outputPtrs = {
+        landmarksBuffer_.data(),
+        handednessBuffer_.data(),
+        presenceBuffer_.data(),
+        worldLandmarksBuffer_.data()
+    };
+
+    if (!engine_->inferMultiOutput(inputBuffer_.data(), outputPtrs)) {
         core::Logger::error("HandLandmark inference failed");
         return std::nullopt;
     }
 
     // Parse output
-    auto result = parseOutput(outputBuffer_.data(), palm, frameWidth, frameHeight);
+    auto result = parseOutput(palm, frameWidth, frameHeight);
 
     // Check presence
     if (result.presence < config_.presenceThreshold) {
@@ -127,8 +148,6 @@ void HandLandmark::extractROI(const uint8_t* nv12Data,
     // Convert NV12 to RGB for the ROI region
     // NV12 format: Y plane (W*H) followed by interleaved UV plane (W*H/2)
 
-    int planeSize = config_.inputWidth * config_.inputHeight;
-
     for (int y = 0; y < config_.inputHeight; ++y) {
         for (int x = 0; x < config_.inputWidth; ++x) {
             // Map to ROI coordinates
@@ -138,10 +157,13 @@ void HandLandmark::extractROI(const uint8_t* nv12Data,
             int sx = static_cast<int>(srcX);
             int sy = static_cast<int>(srcY);
 
+            // NHWC format: index = (y * W + x) * 3 + channel
+            int idx = (y * config_.inputWidth + x) * 3;
+
             if (sx < 0 || sx >= frameWidth || sy < 0 || sy >= frameHeight) {
-                inputBuffer_[0 * planeSize + y * config_.inputWidth + x] = 0.5f;
-                inputBuffer_[1 * planeSize + y * config_.inputWidth + x] = 0.5f;
-                inputBuffer_[2 * planeSize + y * config_.inputWidth + x] = 0.5f;
+                inputBuffer_[idx + 0] = 0.5f;
+                inputBuffer_[idx + 1] = 0.5f;
+                inputBuffer_[idx + 2] = 0.5f;
                 continue;
             }
 
@@ -165,44 +187,44 @@ void HandLandmark::extractROI(const uint8_t* nv12Data,
             int G = std::clamp((298 * C - 100 * D - 208 * E + 128) >> 8, 0, 255);
             int B = std::clamp((298 * C + 516 * D + 128) >> 8, 0, 255);
 
-            // Normalize to [0, 1] and store in CHW format
-            int idx = y * config_.inputWidth + x;
-            inputBuffer_[0 * planeSize + idx] = R / 255.0f;
-            inputBuffer_[1 * planeSize + idx] = G / 255.0f;
-            inputBuffer_[2 * planeSize + idx] = B / 255.0f;
+            // Normalize to [0, 1] and store in NHWC format (H, W, C)
+            // idx already computed above
+            inputBuffer_[idx + 0] = R / 255.0f;
+            inputBuffer_[idx + 1] = G / 255.0f;
+            inputBuffer_[idx + 2] = B / 255.0f;
         }
     }
 }
 
 HandLandmark::Result HandLandmark::parseOutput(
-    const float* output,
     const PalmDetector::Detection& palm,
     int frameWidth, int frameHeight) {
 
     Result result;
 
-    // MediaPipe Hand Landmark output format:
-    // - 21 landmarks × 3 coords = 63 floats (in pixel coords of 224x224)
-    // - Handedness: 1 float
-    // - Presence: 1 float
+    // Model outputs:
+    // landmarksBuffer_: [63] - 21 landmarks × 3 coords (x, y, z in pixel coords of 224x224)
+    // handednessBuffer_: [1] - left/right hand probability
+    // presenceBuffer_: [1] - hand presence raw score
+    // worldLandmarksBuffer_: [63] - world coordinates
 
     // Parse landmarks (in ROI coordinates, 0-224)
     for (int i = 0; i < 21; ++i) {
         // Landmarks are in pixel coordinates of the input image (224x224)
-        float x = output[i * 3 + 0] / config_.inputWidth;   // Normalize to 0-1
-        float y = output[i * 3 + 1] / config_.inputHeight;
-        float z = output[i * 3 + 2];  // Relative depth
+        float x = landmarksBuffer_[i * 3 + 0] / static_cast<float>(config_.inputWidth);   // Normalize to 0-1
+        float y = landmarksBuffer_[i * 3 + 1] / static_cast<float>(config_.inputHeight);
+        float z = landmarksBuffer_[i * 3 + 2];  // Relative depth
 
         result.landmarks[i].x = x;
         result.landmarks[i].y = y;
         result.landmarks[i].z = z;
     }
 
-    // Parse handedness (index 63)
-    result.handedness = output[63];
+    // Parse handedness
+    result.handedness = handednessBuffer_[0];
 
-    // Parse presence (usually sigmoid of raw score)
-    float rawPresence = output[64];
+    // Parse presence (sigmoid of raw score)
+    float rawPresence = presenceBuffer_[0];
     result.presence = 1.0f / (1.0f + std::exp(-rawPresence));
 
     // Calculate palm center from landmarks (average of wrist and middle finger base)

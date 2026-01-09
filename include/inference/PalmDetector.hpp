@@ -29,7 +29,7 @@ public:
         std::string modelPath = "models/palm_detection.onnx";
         int inputWidth = 192;
         int inputHeight = 192;
-        float scoreThreshold = 0.5f;
+        float scoreThreshold = 0.3f;  // Lowered from 0.5 for better detection
         float nmsThreshold = 0.3f;
     };
 
@@ -72,8 +72,11 @@ private:
     void* d_rgb_ = nullptr;
     void* d_resized_ = nullptr;
 
-    // Output buffer
-    std::vector<float> outputBuffer_;
+    // Output buffers - Model has 2 outputs:
+    // outputBuffer_: [2016, 18] - box regressors (x, y, w, h, + 14 keypoint coords)
+    // scoresBuffer_: [2016, 1] - confidence scores
+    std::vector<float> outputBuffer_;   // Boxes: 2016 * 18 = 36288
+    std::vector<float> scoresBuffer_;   // Scores: 2016 * 1 = 2016
 
     // Input buffer (host, for preprocessing)
     std::vector<float> inputBuffer_;
@@ -84,7 +87,7 @@ private:
     // Helpers
     void generateAnchors();
     void preprocessNV12(const uint8_t* nv12Data, int width, int height);
-    std::vector<Detection> decodeOutput(const float* output);
+    std::vector<Detection> decodeOutput(const float* boxes, const float* scores);
     Detection nms(const std::vector<Detection>& detections);
     void unletterbox(Detection& det, int origWidth, int origHeight);
 };

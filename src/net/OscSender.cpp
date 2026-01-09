@@ -1,4 +1,5 @@
 #include "net/OscSender.hpp"
+#include "core/GestureFSM.hpp"
 #include <iostream>
 
 namespace net {
@@ -62,6 +63,37 @@ void OscSender::loop() {
 void OscSender::send(const core::TrackingResult& result) {
     if (!_loAddress) return;
 
+    // V3: Send palm position
+    lo_message palmMsg = lo_message_new();
+    lo_message_add_float(palmMsg, result.palmPosition.x);
+    lo_message_add_float(palmMsg, result.palmPosition.y);
+    lo_message_add_float(palmMsg, result.palmPosition.z);
+    lo_send_message(_loAddress, "/hand/palm", palmMsg);
+    lo_message_free(palmMsg);
+
+    // V3: Send velocity
+    lo_message velMsg = lo_message_new();
+    lo_message_add_float(velMsg, result.velocity.vx);
+    lo_message_add_float(velMsg, result.velocity.vy);
+    lo_message_add_float(velMsg, result.velocity.vz);
+    lo_send_message(_loAddress, "/hand/velocity", velMsg);
+    lo_message_free(velMsg);
+
+    // V3: Send gesture
+    lo_message gestMsg = lo_message_new();
+    lo_message_add_int32(gestMsg, static_cast<int32_t>(result.gesture));
+    lo_message_add_float(gestMsg, result.gestureConfidence);
+    lo_message_add_string(gestMsg, core::GestureFSM::getStateName(result.gesture));
+    lo_send_message(_loAddress, "/hand/gesture", gestMsg);
+    lo_message_free(gestMsg);
+
+    // V3: Send VIP status
+    lo_message vipMsg = lo_message_new();
+    lo_message_add_int32(vipMsg, result.vipLocked ? 1 : 0);
+    lo_send_message(_loAddress, "/hand/vip", vipMsg);
+    lo_message_free(vipMsg);
+
+    // Legacy: Full tracking message (for backward compatibility)
     lo_message msg = lo_message_new();
 
     // Add VIP Locked status

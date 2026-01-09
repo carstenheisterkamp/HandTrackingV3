@@ -59,6 +59,14 @@ public:
     bool infer(const void* inputData, void* outputData);
 
     /**
+     * Run inference with multiple outputs
+     * @param inputData Pointer to input data
+     * @param outputBuffers Vector of output buffer pointers (one per output tensor)
+     * @return true on success
+     */
+    bool inferMultiOutput(const void* inputData, std::vector<void*>& outputBuffers);
+
+    /**
      * Run inference with multiple inputs/outputs
      * @param bindings Array of device pointers for all tensors
      * @return true on success

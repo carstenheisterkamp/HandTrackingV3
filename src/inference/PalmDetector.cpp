@@ -44,8 +44,25 @@ bool PalmDetector::init(const Config& config) {
         return false;
     }
 
-    // Allocate output buffer
-    outputBuffer_.resize(engine_->getOutputInfo().size);
+    core::Logger::info("PalmDetector: TensorRT engine loaded");
+
+    // Model has 2 outputs:
+    // Output 0 (Identity): [1, 2016, 18] - box regressors
+    // Output 1 (Identity_1): [1, 2016, 1] - scores
+    auto& outputs = engine_->getOutputInfos();
+    if (outputs.size() < 2) {
+        core::Logger::error("PalmDetector: Expected 2 outputs, got ", outputs.size());
+        return false;
+    }
+
+    core::Logger::info("  Output 0: ", outputs[0].name, " size=", outputs[0].size);
+    core::Logger::info("  Output 1: ", outputs[1].name, " size=", outputs[1].size);
+
+    // Allocate output buffers
+    outputBuffer_.resize(outputs[0].size);  // [2016, 18] = 36288
+    scoresBuffer_.resize(outputs[1].size);  // [2016, 1] = 2016
+    core::Logger::info("  Boxes buffer: ", outputBuffer_.size(), " floats");
+    core::Logger::info("  Scores buffer: ", scoresBuffer_.size(), " floats");
 
     // Allocate input buffer (3 x H x W)
     inputBuffer_.resize(3 * config_.inputWidth * config_.inputHeight);
@@ -72,36 +89,39 @@ bool PalmDetector::init(const Config& config) {
 }
 
 void PalmDetector::generateAnchors() {
-    // MediaPipe Palm Detection uses SSD-style anchors
-    // Two feature map layers: 24x24 and 12x12
+    // MediaPipe Palm Detection Lite uses 2016 anchors
+    // Feature maps: 24x24 (2 anchors) + 12x12 (6 anchors) = 1152 + 864 = 2016
+    // But actually it's: 48x48 (2 anchors) + 24x24 (6 anchors) = 4608 + 3456 = 8064?
+    // Let's use the actual count: 2016 = 24x24x2 + 12x12x6 = 1152 + 864 = 2016 ✓
 
     struct AnchorConfig {
         int gridSize;
         int numAnchors;
-        float scale;
     };
 
+    // MediaPipe Palm Detection Lite anchor configuration for 192x192 input
     std::vector<AnchorConfig> configs = {
-        {24, 2, 0.1f},   // Layer 1: 24x24, 2 anchors per cell
-        {12, 6, 0.2f}    // Layer 2: 12x12, 6 anchors per cell
-    };
+        {24, 2},   // Layer 1: 24x24, 2 anchors per cell = 1152
+        {12, 6}    // Layer 2: 12x12, 6 anchors per cell = 864
+    };                                                    // Total = 2016 ✓
 
     anchors_.clear();
 
     for (const auto& cfg : configs) {
-        float step = 1.0f / cfg.gridSize;
+        float step = 1.0f / static_cast<float>(cfg.gridSize);
         for (int y = 0; y < cfg.gridSize; ++y) {
             for (int x = 0; x < cfg.gridSize; ++x) {
                 for (int a = 0; a < cfg.numAnchors; ++a) {
-                    float cx = (x + 0.5f) * step;
-                    float cy = (y + 0.5f) * step;
-                    anchors_.push_back({cx, cy, cfg.scale, cfg.scale});
+                    float cx = (static_cast<float>(x) + 0.5f) * step;
+                    float cy = (static_cast<float>(y) + 0.5f) * step;
+                    // Anchor size is 1.0 (normalized), offsets are relative
+                    anchors_.push_back({cx, cy, 1.0f, 1.0f});
                 }
             }
         }
     }
 
-    core::Logger::info("Generated ", anchors_.size(), " anchors");
+    core::Logger::info("Generated ", anchors_.size(), " anchors (expected 2016)");
 }
 
 std::optional<PalmDetector::Detection> PalmDetector::detect(
@@ -115,14 +135,43 @@ std::optional<PalmDetector::Detection> PalmDetector::detect(
     // Preprocess: NV12 → RGB → Resize → Normalize
     preprocessNV12(nv12Data, frameWidth, frameHeight);
 
-    // Run inference
-    if (!engine_->infer(inputBuffer_.data(), outputBuffer_.data())) {
+    // Run inference with multiple outputs
+    std::vector<void*> outputPtrs = {outputBuffer_.data(), scoresBuffer_.data()};
+    if (!engine_->inferMultiOutput(inputBuffer_.data(), outputPtrs)) {
         core::Logger::error("PalmDetector inference failed");
         return std::nullopt;
     }
 
-    // Decode output
-    auto detections = decodeOutput(outputBuffer_.data());
+    // Debug: Log raw output stats (every 60 frames to find detections)
+    static int debugCounter = 0;
+    if (++debugCounter % 60 == 1) {
+        // Analyze scores buffer
+        float minScore = scoresBuffer_[0], maxScore = scoresBuffer_[0];
+        int positiveScores = 0;
+
+        for (size_t i = 0; i < scoresBuffer_.size(); ++i) {
+            float rawScore = scoresBuffer_[i];
+            float score = 1.0f / (1.0f + std::exp(-rawScore));  // Sigmoid
+            minScore = std::min(minScore, score);
+            maxScore = std::max(maxScore, score);
+            if (score > 0.3f) positiveScores++;
+        }
+
+        core::Logger::info("🔍 PalmDetector output analysis:");
+        core::Logger::info("   Boxes buffer: ", outputBuffer_.size(), " floats");
+        core::Logger::info("   Scores buffer: ", scoresBuffer_.size(), " floats");
+        core::Logger::info("   Score range (sigmoid): [", minScore, " to ", maxScore, "]");
+        core::Logger::info("   Scores above 0.3: ", positiveScores, " / ", scoresBuffer_.size());
+        core::Logger::info("   Threshold: ", config_.scoreThreshold);
+    }
+
+    // Decode output (boxes + scores are separate)
+    auto detections = decodeOutput(outputBuffer_.data(), scoresBuffer_.data());
+
+    // Debug: Log detection count
+    if (debugCounter % 60 == 1) {
+        core::Logger::info("   Detections found: ", detections.size());
+    }
 
     if (detections.empty()) {
         return std::nullopt;
@@ -142,12 +191,13 @@ std::optional<PalmDetector::Detection> PalmDetector::detectFromRGB(const float* 
         return std::nullopt;
     }
 
-    // Direct inference on preprocessed RGB
-    if (!engine_->infer(rgbData, outputBuffer_.data())) {
+    // Direct inference on preprocessed RGB with multiple outputs
+    std::vector<void*> outputPtrs = {outputBuffer_.data(), scoresBuffer_.data()};
+    if (!engine_->inferMultiOutput(rgbData, outputPtrs)) {
         return std::nullopt;
     }
 
-    auto detections = decodeOutput(outputBuffer_.data());
+    auto detections = decodeOutput(outputBuffer_.data(), scoresBuffer_.data());
     if (detections.empty()) {
         return std::nullopt;
     }
@@ -194,11 +244,12 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
     // Fill with gray (128)
     std::fill(inputBuffer_.begin(), inputBuffer_.end(), 0.5f);
 
-    // Simple bilinear resize + normalize to [-1, 1]
+    // Simple bilinear resize + normalize to [0, 1]
+    // Model expects NHWC format: [1, 192, 192, 3]
     for (int y = 0; y < newH; ++y) {
         for (int x = 0; x < newW; ++x) {
-            float srcX = x / scale;
-            float srcY = y / scale;
+            float srcX = static_cast<float>(x) / scale;
+            float srcY = static_cast<float>(y) / scale;
 
             int x0 = static_cast<int>(srcX);
             int y0 = static_cast<int>(srcY);
@@ -211,13 +262,12 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
                 if (dstX >= 0 && dstX < config_.inputWidth &&
                     dstY >= 0 && dstY < config_.inputHeight) {
 
-                    // CHW format, normalized to [0, 1]
-                    int dstIdx = dstY * config_.inputWidth + dstX;
-                    int planeSize = config_.inputWidth * config_.inputHeight;
+                    // NHWC format: [batch, height, width, channels]
+                    int dstIdx = (dstY * config_.inputWidth + dstX) * 3;
 
-                    inputBuffer_[0 * planeSize + dstIdx] = rgbHost[srcIdx + 0] / 255.0f;
-                    inputBuffer_[1 * planeSize + dstIdx] = rgbHost[srcIdx + 1] / 255.0f;
-                    inputBuffer_[2 * planeSize + dstIdx] = rgbHost[srcIdx + 2] / 255.0f;
+                    inputBuffer_[dstIdx + 0] = static_cast<float>(rgbHost[srcIdx + 0]) / 255.0f;
+                    inputBuffer_[dstIdx + 1] = static_cast<float>(rgbHost[srcIdx + 1]) / 255.0f;
+                    inputBuffer_[dstIdx + 2] = static_cast<float>(rgbHost[srcIdx + 2]) / 255.0f;
                 }
             }
         }
@@ -227,17 +277,17 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
 #endif
 }
 
-std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* output) {
+std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* boxes, const float* scores) {
     std::vector<Detection> detections;
 
-    // MediaPipe Palm Detection output format:
-    // For each anchor: [score, x_offset, y_offset, w, h, kp0_x, kp0_y, ..., kp6_x, kp6_y]
-    // Total: 1 + 4 + 14 = 19 values per anchor
+    // MediaPipe Palm Detection Lite output format:
+    // boxes: [2016, 18] - for each anchor: [x_center, y_center, w, h, kp0_x, kp0_y, ..., kp6_x, kp6_y]
+    // scores: [2016, 1] - raw logit scores (need sigmoid)
 
-    const int stride = 19;
+    const int boxStride = 18;  // 4 box coords + 7 keypoints * 2 = 18
 
-    for (size_t i = 0; i < anchors_.size(); ++i) {
-        float rawScore = output[i * stride + 0];
+    for (size_t i = 0; i < anchors_.size() && i < scoresBuffer_.size(); ++i) {
+        float rawScore = scores[i];
 
         // Sigmoid to get probability
         float score = 1.0f / (1.0f + std::exp(-rawScore));
@@ -249,24 +299,30 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* out
         Detection det;
         det.score = score;
 
-        // Decode box (offsets from anchor)
-        float dx = output[i * stride + 1];
-        float dy = output[i * stride + 2];
-        float dw = output[i * stride + 3];
-        float dh = output[i * stride + 4];
+        // Box data starts at boxes[i * 18]
+        const float* box = &boxes[i * boxStride];
 
-        det.x = anchors_[i][0] + dx * anchors_[i][2];
-        det.y = anchors_[i][1] + dy * anchors_[i][3];
-        det.width = anchors_[i][2] * std::exp(dw);
-        det.height = anchors_[i][3] * std::exp(dh);
+        // Decode box: offsets are relative to anchor, scaled by 192 (input size)
+        // MediaPipe uses: center_x = anchor_x + offset_x / 192
+        float dx = box[0] / static_cast<float>(config_.inputWidth);
+        float dy = box[1] / static_cast<float>(config_.inputHeight);
+        float dw = box[2] / static_cast<float>(config_.inputWidth);
+        float dh = box[3] / static_cast<float>(config_.inputHeight);
 
-        // Decode keypoints
+        det.x = anchors_[i][0] + dx;
+        det.y = anchors_[i][1] + dy;
+        det.width = dw;
+        det.height = dh;
+
+        // Decode keypoints (7 keypoints, each x,y relative to anchor)
         for (int k = 0; k < 7; ++k) {
-            det.keypoints[k * 2 + 0] = anchors_[i][0] + output[i * stride + 5 + k * 2 + 0] * anchors_[i][2];
-            det.keypoints[k * 2 + 1] = anchors_[i][1] + output[i * stride + 5 + k * 2 + 1] * anchors_[i][3];
+            float kpx = box[4 + k * 2] / static_cast<float>(config_.inputWidth);
+            float kpy = box[4 + k * 2 + 1] / static_cast<float>(config_.inputHeight);
+            det.keypoints[k * 2 + 0] = anchors_[i][0] + kpx;
+            det.keypoints[k * 2 + 1] = anchors_[i][1] + kpy;
         }
 
-        // Calculate rotation from keypoints (wrist to middle finger)
+        // Calculate rotation from keypoints (wrist to middle finger base)
         float kp0_x = det.keypoints[0];  // Wrist
         float kp0_y = det.keypoints[1];
         float kp2_x = det.keypoints[4];  // Middle finger base

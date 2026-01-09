@@ -94,12 +94,17 @@ bool ProcessingLoop::isRunning() const {
 void ProcessingLoop::loop() {
     // Lazy TensorRT initialization in BACKGROUND thread (doesn't block frame processing)
 #ifdef ENABLE_TENSORRT
+    Logger::info("🔧 ENABLE_TENSORRT is defined, checking init state...");
+    Logger::info("   _inferenceInitialized: ", _inferenceInitialized ? "true" : "false");
+    Logger::info("   _inferenceAttempted: ", _inferenceAttempted ? "true" : "false");
+
     if (!_inferenceInitialized && !_inferenceAttempted) {
         _inferenceAttempted = true;
+        Logger::info("🚀 Starting TensorRT initialization thread...");
 
         // Start TRT init in background thread
         _trtInitThread = std::thread([this]() {
-            Logger::info("Initializing TensorRT inference (background thread)...");
+            Logger::info("🔧 TensorRT init thread STARTED");
 
             auto palmDetector = std::make_unique<inference::PalmDetector>();
             auto handLandmark = std::make_unique<inference::HandLandmark>();
@@ -111,8 +116,15 @@ void ProcessingLoop::loop() {
             landmarkConfig.modelPath = "models/hand_landmark.onnx";
 
             // Check if ONNX files exist
+            Logger::info("🔍 Checking for ONNX models...");
+            Logger::info("   Palm model path: ", palmConfig.modelPath);
+            Logger::info("   Landmark model path: ", landmarkConfig.modelPath);
+
             bool palmExists = std::filesystem::exists(palmConfig.modelPath);
             bool landmarkExists = std::filesystem::exists(landmarkConfig.modelPath);
+
+            Logger::info("   Palm exists: ", palmExists ? "YES" : "NO");
+            Logger::info("   Landmark exists: ", landmarkExists ? "YES" : "NO");
 
             if (!palmExists || !landmarkExists) {
                 Logger::warn("ONNX models not found!");
@@ -123,8 +135,16 @@ void ProcessingLoop::loop() {
                 return;
             }
 
+            Logger::info("🔧 Initializing Palm Detector...");
             bool palmOk = palmDetector->init(palmConfig);
-            bool landmarkOk = palmOk ? handLandmark->init(landmarkConfig) : false;
+            Logger::info("   Palm Detector init: ", palmOk ? "SUCCESS" : "FAILED");
+
+            bool landmarkOk = false;
+            if (palmOk) {
+                Logger::info("🔧 Initializing Hand Landmark...");
+                landmarkOk = handLandmark->init(landmarkConfig);
+                Logger::info("   Hand Landmark init: ", landmarkOk ? "SUCCESS" : "FAILED");
+            }
 
             if (palmOk && landmarkOk) {
                 // Transfer ownership to class members (thread-safe)
@@ -132,9 +152,12 @@ void ProcessingLoop::loop() {
                 _palmDetector = std::move(palmDetector);
                 _handLandmark = std::move(handLandmark);
                 _inferenceInitialized = true;
-                Logger::info("TensorRT inference initialized successfully (background)");
+                Logger::info("✅ TensorRT inference initialized successfully (background)");
+                Logger::info("   Ready for palm detection and landmark inference!");
             } else {
-                Logger::warn("TensorRT inference initialization failed");
+                Logger::warn("❌ TensorRT inference initialization failed");
+                if (!palmOk) Logger::warn("   Palm detector init failed");
+                if (!landmarkOk) Logger::warn("   Hand landmark init failed");
             }
         });
     }
@@ -170,6 +193,16 @@ void ProcessingLoop::processFrame(Frame* frame) {
         Logger::info("Frame: ", frame->width, "x", frame->height);
         Logger::info("Stereo: ", frame->hasStereoData ? "Available" : "Disabled");
         Logger::info("MJPEG: ", (_mjpegServer && _mjpegServer->hasClients()) ? "Clients connected" : "No clients");
+
+        // Hand tracking stats (REQUIRED for visibility)
+        Logger::info("🖐 Hands Detected: ", _lastHandCount);
+        if (_lastHandCount > 0) {
+            Logger::info("   Position: (", _lastPalmX, ", ", _lastPalmY, ", ", _lastPalmZ, ")");
+            Logger::info("   Velocity: (", _lastVelX, ", ", _lastVelY, ")");
+            Logger::info("   Gesture: ", _lastGesture);
+            Logger::info("   VIP Locked: ", _lastVipLocked ? "Yes" : "No");
+        }
+        Logger::info("TensorRT: ", _inferenceInitialized ? "Ready" : "Not initialized");
 
         _frameCount = 0;
         _lastFpsTime = now;
@@ -230,6 +263,12 @@ void ProcessingLoop::processFrame(Frame* frame) {
     }
 
     if (canInfer) {
+        // Debug: Log that we're attempting inference
+        static int inferenceAttempts = 0;
+        if (++inferenceAttempts % 60 == 1) {
+            Logger::info("🔍 Running Palm Detection inference (attempt ", inferenceAttempts, ")...");
+        }
+
         // Palm Detection
         auto palmDetection = _palmDetector->detect(
             frame->data.get(),
@@ -244,7 +283,15 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 Logger::info("🖐 Palm detected! Score: ", palmDetection->score,
                             " Pos: (", palmDetection->x, ", ", palmDetection->y, ")");
             }
+        } else {
+            // No detection - log periodically
+            static int noDetectionCount = 0;
+            if (++noDetectionCount % 60 == 1) {
+                Logger::info("❌ No palm detected (frame ", noDetectionCount, ")");
+            }
+        }
 
+        if (palmDetection) {
             // Draw palm BBox
             if (!debugFrame.empty()) {
                 int cx = static_cast<int>(palmDetection->x * debugFrame.cols);
@@ -328,7 +375,20 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i)
                     result.landmarks.push_back(landmarks->landmarks[i]);
                 _oscQueue->try_push(result);
+
+                // Update tracking state for stats display
+                _lastHandCount = 1;
+                _lastPalmX = result.palmPosition.x;
+                _lastPalmY = result.palmPosition.y;
+                _lastPalmZ = result.palmPosition.z;
+                _lastVelX = result.velocity.vx;
+                _lastVelY = result.velocity.vy;
+                _lastGesture = GestureFSM::getStateName(gesture);
+                _lastVipLocked = result.vipLocked;
             }
+        } else {
+            // No palm detected - reset hand count
+            _lastHandCount = 0;
         }
     }
 #endif
@@ -361,9 +421,9 @@ void ProcessingLoop::processFrame(Frame* frame) {
 }
 
 void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
-    // Semi-transparent status box
+    // Semi-transparent status box (larger for hand info)
     cv::Mat overlay = debugFrame.clone();
-    cv::rectangle(overlay, cv::Rect(5, 5, 250, 100), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::rectangle(overlay, cv::Rect(5, 5, 280, 160), cv::Scalar(0, 0, 0), cv::FILLED);
     cv::addWeighted(overlay, 0.6, debugFrame, 0.4, 0, debugFrame);
 
     int y = 22;
@@ -385,22 +445,49 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::putText(debugFrame, fpsStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, fpsColor, 1);
     y += lineHeight;
 
-    // V3 Status
-    cv::putText(debugFrame, "V3 Sensor-Only Mode", cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 200, 0), 1);
+    // TensorRT Status
+    std::string trtStatus = _inferenceInitialized ? "TensorRT: Ready" : "TensorRT: Building...";
+    cv::Scalar trtColor = _inferenceInitialized ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255);
+    cv::putText(debugFrame, trtStatus, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, trtColor, 1);
     y += lineHeight;
 
-    // System Performance (update every 5s)
+    // Hand Detection Status
+    char handStr[64];
+    snprintf(handStr, sizeof(handStr), "Hands: %d", _lastHandCount);
+    cv::Scalar handColor = (_lastHandCount > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
+    cv::putText(debugFrame, handStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, handColor, 1);
+    y += lineHeight;
+
+    // If hand detected, show details
+    if (_lastHandCount > 0) {
+        char posStr[64];
+        snprintf(posStr, sizeof(posStr), "Pos: (%.2f, %.2f, %.0f)", _lastPalmX, _lastPalmY, _lastPalmZ);
+        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 255, 200), 1);
+        y += lineHeight;
+
+        char velStr[64];
+        snprintf(velStr, sizeof(velStr), "Vel: (%.2f, %.2f)", _lastVelX, _lastVelY);
+        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 255), 1);
+        y += lineHeight;
+
+        std::string gestureStr = "Gesture: " + _lastGesture;
+        cv::Scalar gestureColor = (_lastGesture != "None") ? cv::Scalar(0, 255, 255) : cv::Scalar(200, 200, 200);
+        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, gestureColor, 1);
+        y += lineHeight;
+
+        std::string vipStr = _lastVipLocked ? "VIP: LOCKED" : "VIP: Tracking...";
+        cv::Scalar vipColor = _lastVipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 200, 0);
+        cv::putText(debugFrame, vipStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, vipColor, 1);
+    }
+
+    // System Performance (update every 5s) - bottom of frame
     auto perfNow = std::chrono::steady_clock::now();
     if (std::chrono::duration_cast<std::chrono::seconds>(perfNow - _lastPerfUpdate).count() >= 5) {
         _performanceSummary = SystemMonitor::getPerformanceSummary();
         _lastPerfUpdate = perfNow;
     }
-    cv::putText(debugFrame, _performanceSummary, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 200, 255), 1);
-    y += lineHeight;
-
-    // Stereo Status
-    std::string stereoStr = frame->hasStereoData ? "Stereo: Ready" : "Stereo: Disabled";
-    cv::putText(debugFrame, stereoStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 200), 1);
+    cv::putText(debugFrame, _performanceSummary, cv::Point(10, debugFrame.rows - 10),
+                cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 200, 255), 1);
 }
 
 } // namespace core

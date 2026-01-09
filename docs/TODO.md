@@ -1,12 +1,55 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 2 - TensorRT Inference
+> **Aktuelle Phase:** Phase 2 - TensorRT Inference ✅ ABGESCHLOSSEN
 > **Letztes Update:** 2026-01-09
-> **Ziel:** Hand-NNs auf Jetson mit TensorRT
+> **Status:** 🎉 MEILENSTEIN ERREICHT - Erste funktionierende Hand-Erkennung!
+
+---
+
+## 🎉 MEILENSTEIN: Erste funktionierende Hand-Erkennung!
+
+**Datum:** 2026-01-09
+
+Zum ersten Mal haben wir:
+- ✅ **Getrackte Hände** - Palm Detection + Hand Landmark funktioniert
+- ✅ **Skeleton-Rendering** - 21 Landmarks werden korrekt gezeichnet
+- ✅ **MJPEG Preview** - Hand-Skelett im Debug-Overlay sichtbar
+- ✅ **OSC Output** - Tracking-Daten werden gesendet
+
+**Dies markiert den erfolgreichen Abschluss von Phase 2!**
 
 ---
 
 ## 🎯 Aktuelle Aufgabe
+
+### Phase 2: TensorRT Inference - ✅ ABGESCHLOSSEN
+**Status:** Funktioniert!
+
+**Was funktioniert:**
+- ✅ TensorRT Engine lädt und führt Inference aus
+- ✅ Palm Detection erkennt Hände im Bild
+- ✅ Hand Landmark extrahiert 21 Keypoints
+- ✅ Skeleton wird korrekt im MJPEG-Preview gezeichnet
+- ✅ HandTracker + GestureFSM verarbeiten die Daten
+- ✅ OSC sendet Tracking-Ergebnisse
+
+### Phase 2.5: Stats & OSC Integration - ✅ ABGESCHLOSSEN
+
+**Implementiert:**
+- ✅ ProcessingLoop: Hand-Stats in Terminal-Logs (Hands, Position, Velocity, Gesture, VIP)
+- ✅ ProcessingLoop: Debug-Overlay mit Hand-Info im MJPEG-Preview
+- ✅ OscSender: V3-Felder werden jetzt gesendet (/hand/palm, /hand/velocity, /hand/gesture, /hand/vip)
+
+### Phase 2.4: Model-Format-Fix - ✅ ABGESCHLOSSEN
+
+**Was korrigiert wurde:**
+- ✅ PalmDetector.cpp: NHWC Input-Format
+- ✅ PalmDetector.cpp: 2 separate Outputs (boxes [2016,18] + scores [2016,1])
+- ✅ PalmDetector.cpp: 2016 Anchors (24×24×2 + 12×12×6)
+- ✅ HandLandmark.cpp: NHWC Input-Format
+- ✅ HandLandmark.cpp: 4 separate Outputs (landmarks, handedness, presence, world)
+- ✅ TensorRTEngine: inferMultiOutput() Methode hinzugefügt
+
 
 ### Phase 2.1: TensorRT Engine Wrapper
 - [x] TensorRTEngine.hpp/.cpp erstellen
@@ -51,19 +94,19 @@
 | Config: FPS auf 60 ändern | ✅ | main.cpp |
 | Test: 60 FPS verifizieren | ⬜ | Auf Jetson deployen |
 
-### Phase 2: TensorRT Inference
+### Phase 2: TensorRT Inference ✅
 **Ziel:** Hand-NNs auf Jetson mit TensorRT
 
 | Task | Status | Notes |
 |------|--------|-------|
-| TensorRT Engine Wrapper | ⬜ | Generische Klasse |
-| Palm Detection TRT Engine | ⬜ | .onnx → .engine |
-| Hand Landmark TRT Engine | ⬜ | .onnx → .engine |
-| NV12 → RGB Preprocessing (GPU) | ⬜ | CUDA/NPP |
-| LETTERBOX Preprocessing | ⬜ | GPU-seitig |
-| Unletterbox Postprocessing | ⬜ | Koordinaten zurückmappen |
-| ProcessingLoop Integration | ⬜ | Inference Pipeline |
-| Test: 30+ FPS verifizieren | ⬜ | Mit beiden NNs |
+| TensorRT Engine Wrapper | ✅ | Generische Klasse |
+| Palm Detection TRT Engine | ✅ | .onnx → .engine |
+| Hand Landmark TRT Engine | ✅ | .onnx → .engine |
+| NV12 → RGB Preprocessing (GPU) | ✅ | CUDA/NPP |
+| LETTERBOX Preprocessing | ✅ | GPU-seitig |
+| Unletterbox Postprocessing | ✅ | Koordinaten zurückmappen |
+| ProcessingLoop Integration | ✅ | Inference Pipeline |
+| Test: 30+ FPS verifizieren | ✅ | Mit beiden NNs |
 
 ### Phase 3: Stereo Depth (Punktuell)
 **Ziel:** Z-Koordinate nur am Palm Center
@@ -110,10 +153,11 @@
 | Task | Status | Notes |
 |------|--------|-------|
 | 30 Hz Rate Limiting | ⬜ | Decoupled von FPS |
-| Drop-Oldest >50ms | ⬜ | Backpressure |
-| /hand/palm Message | ⬜ | x, y, z |
-| /hand/velocity Message | ⬜ | vx, vy, vz |
-| /hand/gesture Message | ⬜ | state, confidence |
+| Drop-Oldest >50ms | ✅ | Backpressure implementiert |
+| /hand/palm Message | ✅ | x, y, z |
+| /hand/velocity Message | ✅ | vx, vy, vz |
+| /hand/gesture Message | ✅ | state, confidence, name |
+| /hand/vip Message | ✅ | vipLocked |
 | /service/status Message | ⬜ | Heartbeat |
 | Test: E2E Latenz <60ms | ⬜ | Glass-to-OSC |
 
@@ -184,16 +228,28 @@ MAX_LATENCY_MS = 50
 
 ---
 
-## ⚠️ Bekannte Risiken
+## ⚠️ Bekannte Risiken / Offene Punkte
 
-1. **PoE Bandwidth:** 60fps × (RGB + 2×Mono) = ~40-50 MB/s → sollte passen (GigE = 125 MB/s)
-2. **TensorRT Conversion:** Palm/Landmark Blobs müssen zu ONNX → TRT
-3. **Stereo Kalibrierung:** Muss aus OAK-D Device geladen werden
+1. **OAK-D PoE Reconnect:** 
+   - Problem: Nach Neustart des Service verbindet sich OAK-D manchmal nicht (Reset Problem).
+   - Workaround: Jetson neu starten. 
+   - TODO: `scripts/fix_oak_reconnect.sh` testen und integrieren (Später).
+
+2. **PoE Bandwidth:** 60fps × (RGB + 2×Mono) = ~40-50 MB/s → sollte passen (GigE = 125 MB/s)
+3. **TensorRT Conversion:** Erster Start dauert lange (Engine Build).
 
 ---
 
 ## ✅ Erledigte Aufgaben
 
+### 🎉 MEILENSTEIN 2026-01-09: Erste funktionierende Hand-Erkennung
+- [x] Palm Detection läuft mit TensorRT
+- [x] Hand Landmark extrahiert 21 Keypoints
+- [x] Skeleton-Rendering im MJPEG-Preview
+- [x] OSC sendet Tracking-Daten
+- [x] HandTracker + GestureFSM integriert
+
+### Frühere Aufgaben
 - [x] OPTIMAL_WORKFLOW_V3.md erstellt
 - [x] TODO.md erstellt
 - [x] PipelineManager.cpp: V3 Sensor-Only Pipeline (RGB + Mono L/R + Sync)
@@ -210,4 +266,12 @@ MAX_LATENCY_MS = 50
   - [x] ProcessingLoop.hpp: Vereinfacht, alte Filter entfernt
   - [x] Frame.hpp: nnData/palmData als DEPRECATED markiert
   - [x] docs/: Alte Dateien ins Archive verschoben
+- [x] **OSC INTEGRATION (V3):**
+  - [x] OscSender.cpp: /hand/palm (x,y,z) Message
+  - [x] OscSender.cpp: /hand/velocity (vx,vy,vz) Message
+  - [x] OscSender.cpp: /hand/gesture (state, confidence, name) Message
+  - [x] OscSender.cpp: /hand/vip (locked) Message
+- [x] **STATS & DEBUG:**
+  - [x] ProcessingLoop: Hand-Stats im Terminal-Log
+  - [x] ProcessingLoop: Hand-Info im MJPEG Debug-Overlay
 

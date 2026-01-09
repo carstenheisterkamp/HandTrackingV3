@@ -108,8 +108,7 @@ else()
 
         if (DEPTHAI_INCLUDE_DIR)
              message(STATUS "DepthAI Header gefunden: ${DEPTHAI_INCLUDE_DIR}")
-             add_library(depthai::core SHARED IMPORTED
-                     include/core/ProcessingLoop.hpp)
+             add_library(depthai::core SHARED IMPORTED)
              set_target_properties(depthai::core PROPERTIES
                 IMPORTED_LOCATION "${DEPTHAI_LIBRARY}"
                 INTERFACE_INCLUDE_DIRECTORIES "${DEPTHAI_INCLUDE_DIR}"
@@ -204,15 +203,6 @@ add_custom_command(TARGET HandTrackingService POST_BUILD
     COMMENT "Copying models directory to build output..."
 )
 
-# Pre-build: Kill old service and clear ARP cache to free OAK-D connection (only on Jetson)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-    add_custom_command(TARGET HandTrackingService PRE_BUILD
-        COMMAND pkill -SIGTERM HandTrackingService 2>/dev/null || true
-        COMMAND sleep 1
-        COMMAND pkill -9 HandTrackingService 2>/dev/null || true
-        COMMAND sudo arp -d 169.254.1.222 2>/dev/null || true
-        COMMAND ping -c 1 -W 1 169.254.1.222 >/dev/null 2>&1 || true
-        COMMENT "Stopping old HandTrackingService and clearing ARP cache..."
-    )
-endif()
+# Note: Pre-build kill/cleanup removed - causes sudo password hang during build
+# Use scripts/kill_old_service.sh manually if needed before running
 

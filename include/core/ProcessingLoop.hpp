@@ -88,6 +88,13 @@ private:
     int _frameCount = 0;
     float _currentFps = 0.0f;
 
+    // Hand Tracking State (for stats display)
+    int _lastHandCount = 0;
+    float _lastPalmX = 0.0f, _lastPalmY = 0.0f, _lastPalmZ = 0.0f;
+    float _lastVelX = 0.0f, _lastVelY = 0.0f;
+    std::string _lastGesture = "None";
+    bool _lastVipLocked = false;
+
     // System Performance (cached)
     std::string _performanceSummary;
     std::chrono::steady_clock::time_point _lastPerfUpdate;

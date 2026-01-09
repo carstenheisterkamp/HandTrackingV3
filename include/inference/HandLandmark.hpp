@@ -63,9 +63,14 @@ private:
 
     std::unique_ptr<TensorRTEngine> engine_;
 
-    // Input/output buffers
+    // Input buffer (NHWC format)
     std::vector<float> inputBuffer_;
-    std::vector<float> outputBuffer_;
+
+    // Output buffers - Model has 4 outputs:
+    std::vector<float> landmarksBuffer_;      // [63] - 21 × 3 landmarks
+    std::vector<float> handednessBuffer_;     // [1] - left/right hand
+    std::vector<float> presenceBuffer_;       // [1] - hand presence score
+    std::vector<float> worldLandmarksBuffer_; // [63] - world coords
 
     // ROI extraction parameters
     float lastRotation_ = 0.0f;
@@ -74,8 +79,7 @@ private:
     // Helpers
     void extractROI(const uint8_t* nv12Data, int frameWidth, int frameHeight,
                     const PalmDetector::Detection& palm);
-    Result parseOutput(const float* output,
-                       const PalmDetector::Detection& palm,
+    Result parseOutput(const PalmDetector::Detection& palm,
                        int frameWidth, int frameHeight);
     void transformToFrameCoords(Result& result,
                                 const PalmDetector::Detection& palm,
