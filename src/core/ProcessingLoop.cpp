@@ -176,15 +176,12 @@ void ProcessingLoop::processFrame(Frame* frame) {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // V3 Phase 1-2: Debug Preview Only
-    // TensorRT inference will be added in Phase 2
+    // Step 1: Convert NV12 to BGR for visualization
     // ═══════════════════════════════════════════════════════════
-
     bool shouldRenderDebug = _mjpegServer && _mjpegServer->hasClients();
     cv::Mat debugFrame;
 
     if (shouldRenderDebug) {
-        // Convert NV12 to BGR for MJPEG preview
         size_t requiredSize = frame->width * frame->height * 3;
         if (!_bgrBuffer || _bgrBufferSize < requiredSize) {
             _bgrBuffer = allocate_aligned<uint8_t>(requiredSize);
@@ -200,8 +197,6 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
         if (srcDev && dstDev) {
             NppiSize oSizeROI = {(int)frame->width, (int)frame->height};
-
-            // NV12 to BGR
             const Npp8u* pSrc[2];
             pSrc[0] = (const Npp8u*)srcDev;
             pSrc[1] = (const Npp8u*)srcDev + frame->width * frame->height;
@@ -218,23 +213,16 @@ void ProcessingLoop::processFrame(Frame* frame) {
             }
         }
 #else
-        // CPU fallback
         cv::Mat nv12(frame->height * 3 / 2, frame->width, CV_8UC1, frame->data.get());
         cv::cvtColor(nv12, debugFrame, cv::COLOR_YUV2BGR_NV12);
 #endif
-
-        if (!debugFrame.empty()) {
-            drawDebugOverlay(debugFrame, frame);
-            _mjpegServer->update(debugFrame);
-        }
     }
 
     // ═══════════════════════════════════════════════════════════
-    // V3 Phase 2: TensorRT Palm Detection + Hand Landmarks
+    // Step 2: TensorRT Inference (Palm + Landmarks)
     // ═══════════════════════════════════════════════════════════
 
 #ifdef ENABLE_TENSORRT
-    // Thread-safe check: TRT may still be initializing in background
     bool canInfer = false;
     {
         std::lock_guard<std::mutex> lock(_trtMutex);
@@ -250,6 +238,23 @@ void ProcessingLoop::processFrame(Frame* frame) {
         );
 
         if (palmDetection) {
+            // Debug log (every 30 frames)
+            static int detectionCount = 0;
+            if (++detectionCount % 30 == 1) {
+                Logger::info("🖐 Palm detected! Score: ", palmDetection->score,
+                            " Pos: (", palmDetection->x, ", ", palmDetection->y, ")");
+            }
+
+            // Draw palm BBox
+            if (!debugFrame.empty()) {
+                int cx = static_cast<int>(palmDetection->x * debugFrame.cols);
+                int cy = static_cast<int>(palmDetection->y * debugFrame.rows);
+                int w = static_cast<int>(palmDetection->width * debugFrame.cols);
+                int h = static_cast<int>(palmDetection->height * debugFrame.rows);
+                cv::rectangle(debugFrame, cv::Rect(cx - w/2, cy - h/2, w, h), cv::Scalar(0, 255, 0), 2);
+                cv::circle(debugFrame, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 255), -1);
+            }
+
             // Hand Landmark Inference
             auto landmarks = _handLandmark->infer(
                 frame->data.get(),
@@ -259,65 +264,82 @@ void ProcessingLoop::processFrame(Frame* frame) {
             );
 
             if (landmarks) {
-                // Calculate delta time for Kalman filter
+                // Debug log
+                static int landmarkCount = 0;
+                if (++landmarkCount % 30 == 1) {
+                    Logger::info("✋ Landmarks! Presence: ", landmarks->presence);
+                }
+
+                // Draw landmarks
+                if (!debugFrame.empty()) {
+                    for (size_t i = 0; i < landmarks->landmarks.size(); ++i) {
+                        int lx = static_cast<int>(landmarks->landmarks[i].x * debugFrame.cols);
+                        int ly = static_cast<int>(landmarks->landmarks[i].y * debugFrame.rows);
+                        cv::Scalar color = (i == 4 || i == 8 || i == 12 || i == 16 || i == 20)
+                            ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 0, 0);
+                        cv::circle(debugFrame, cv::Point(lx, ly), 3, color, -1);
+                    }
+
+                    // Skeleton
+                    const int conns[][2] = {{0,1},{1,2},{2,3},{3,4},{0,5},{5,6},{6,7},{7,8},
+                        {0,9},{9,10},{10,11},{11,12},{0,13},{13,14},{14,15},{15,16},
+                        {0,17},{17,18},{18,19},{19,20}};
+                    for (const auto& c : conns) {
+                        if (c[0] < (int)landmarks->landmarks.size() && c[1] < (int)landmarks->landmarks.size()) {
+                            cv::line(debugFrame,
+                                cv::Point(landmarks->landmarks[c[0]].x * debugFrame.cols,
+                                          landmarks->landmarks[c[0]].y * debugFrame.rows),
+                                cv::Point(landmarks->landmarks[c[1]].x * debugFrame.cols,
+                                          landmarks->landmarks[c[1]].y * debugFrame.rows),
+                                cv::Scalar(0, 255, 0), 1);
+                        }
+                    }
+                }
+
+                // Kalman + Gesture + OSC
                 static auto lastTime = std::chrono::steady_clock::now();
                 auto currentTime = std::chrono::steady_clock::now();
                 float dt = std::chrono::duration<float>(currentTime - lastTime).count();
                 lastTime = currentTime;
 
-                // Get palm center as 3D point (Z from depth if available, else estimated)
-                float palmZ = 500.0f;  // Default 50cm
-
-                // Phase 3: Get depth at palm center (when stereo enabled)
+                float palmZ = 500.0f;
                 if (frame->hasStereoData && _stereoDepth) {
-                    int palmU = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
-                    int palmV = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
                     palmZ = _stereoDepth->getDepthAtPoint(
-                        frame->monoLeftData.get(),
-                        frame->monoRightData.get(),
-                        static_cast<int>(frame->monoWidth),
-                        static_cast<int>(frame->monoHeight),
-                        palmU, palmV
-                    );
+                        frame->monoLeftData.get(), frame->monoRightData.get(),
+                        (int)frame->monoWidth, (int)frame->monoHeight,
+                        (int)(landmarks->palmCenterX * frame->monoWidth),
+                        (int)(landmarks->palmCenterY * frame->monoHeight));
                 }
 
-                Point3D palm3D = {
-                    landmarks->palmCenterX,
-                    landmarks->palmCenterY,
-                    palmZ
-                };
-
-                // Kalman filter update
+                Point3D palm3D = {landmarks->palmCenterX, landmarks->palmCenterY, palmZ};
                 _handTracker->predict(dt);
                 _handTracker->update(palm3D);
 
-                // Gesture FSM update - convert landmarks to expected format
-                std::vector<TrackingResult::NormalizedPoint> landmarkPoints;
-                landmarkPoints.reserve(21);
-                for (const auto& lm : landmarks->landmarks) {
-                    landmarkPoints.push_back(lm);
-                }
-                auto gesture = _gestureFSM->update(landmarkPoints);
+                std::vector<TrackingResult::NormalizedPoint> lmPoints;
+                for (const auto& lm : landmarks->landmarks) lmPoints.push_back(lm);
+                auto gesture = _gestureFSM->update(lmPoints);
 
-                // Prepare tracking result for OSC
                 TrackingResult result;
                 result.palmPosition = _handTracker->getPosition();
                 result.velocity = _handTracker->getVelocity();
                 result.gesture = gesture;
                 result.vipLocked = _handTracker->isLocked();
                 result.timestamp = std::chrono::steady_clock::now();
-
-                // Copy landmarks
-                for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i) {
+                for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i)
                     result.landmarks.push_back(landmarks->landmarks[i]);
-                }
-
-                // Send to OSC queue
                 _oscQueue->try_push(result);
             }
         }
     }
 #endif
+
+    // ═══════════════════════════════════════════════════════════
+    // Step 3: Send to MJPEG (AFTER drawing detections)
+    // ═══════════════════════════════════════════════════════════
+    if (shouldRenderDebug && !debugFrame.empty()) {
+        drawDebugOverlay(debugFrame, frame);
+        _mjpegServer->update(debugFrame);
+    }
 
     // ═══════════════════════════════════════════════════════════
     // Timing
