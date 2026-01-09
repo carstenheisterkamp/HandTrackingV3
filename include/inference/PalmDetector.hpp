@@ -52,6 +52,18 @@ public:
                                     int frameWidth, int frameHeight);
 
     /**
+     * Detect ALL palms in NV12 frame (up to maxHands)
+     * @param nv12Data NV12 frame data
+     * @param frameWidth Original frame width
+     * @param frameHeight Original frame height
+     * @param maxHands Maximum number of hands to return (default 2)
+     * @return Vector of detections, sorted by score (best first)
+     */
+    std::vector<Detection> detectAll(const uint8_t* nv12Data,
+                                     int frameWidth, int frameHeight,
+                                     int maxHands = 2);
+
+    /**
      * Detect palm from RGB float buffer (already preprocessed)
      */
     std::optional<Detection> detectFromRGB(const float* rgbData);
@@ -89,7 +101,9 @@ private:
     void preprocessNV12(const uint8_t* nv12Data, int width, int height);
     std::vector<Detection> decodeOutput(const float* boxes, const float* scores);
     Detection nms(const std::vector<Detection>& detections);
+    std::vector<Detection> nmsMulti(const std::vector<Detection>& detections, int maxHands);
     void unletterbox(Detection& det, int origWidth, int origHeight);
+    float computeIoU(const Detection& a, const Detection& b);
 };
 
 } // namespace inference

@@ -5,6 +5,7 @@
 #include <mutex>
 #include <memory>
 #include <vector>
+#include <array>
 #include <opencv2/opencv.hpp>
 
 #ifdef ENABLE_CUDA
@@ -61,9 +62,10 @@ private:
     std::atomic<bool> _running;
     std::thread _thread;
 
-    // V3 Components (Phase 2+)
-    std::unique_ptr<HandTracker> _handTracker;
-    std::unique_ptr<GestureFSM> _gestureFSM;
+    // V3 Components (Phase 2+) - Support for 2 hands
+    static constexpr int MAX_HANDS = 2;
+    std::array<std::unique_ptr<HandTracker>, MAX_HANDS> _handTrackers;
+    std::array<std::unique_ptr<GestureFSM>, MAX_HANDS> _gestureFSMs;
     std::unique_ptr<StereoDepth> _stereoDepth;
 
     // V3 Inference (TensorRT)
@@ -88,12 +90,15 @@ private:
     int _frameCount = 0;
     float _currentFps = 0.0f;
 
-    // Hand Tracking State (for stats display)
+    // Hand Tracking State (for stats display) - 2 hands
     int _lastHandCount = 0;
-    float _lastPalmX = 0.0f, _lastPalmY = 0.0f, _lastPalmZ = 0.0f;
-    float _lastVelX = 0.0f, _lastVelY = 0.0f;
-    std::string _lastGesture = "None";
-    bool _lastVipLocked = false;
+    struct HandState {
+        float palmX = 0.0f, palmY = 0.0f, palmZ = 0.0f;
+        float velX = 0.0f, velY = 0.0f;
+        std::string gesture = "None";
+        bool vipLocked = false;
+    };
+    std::array<HandState, MAX_HANDS> _handStates;
 
     // System Performance (cached)
     std::string _performanceSummary;

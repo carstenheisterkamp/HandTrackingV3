@@ -63,12 +63,15 @@ void OscSender::loop() {
 void OscSender::send(const core::TrackingResult& result) {
     if (!_loAddress) return;
 
+    // Build OSC path with hand ID (e.g., /hand/0/palm or /hand/1/palm)
+    std::string handPrefix = "/hand/" + std::to_string(result.handId);
+
     // V3: Send palm position
     lo_message palmMsg = lo_message_new();
     lo_message_add_float(palmMsg, result.palmPosition.x);
     lo_message_add_float(palmMsg, result.palmPosition.y);
     lo_message_add_float(palmMsg, result.palmPosition.z);
-    lo_send_message(_loAddress, "/hand/palm", palmMsg);
+    lo_send_message(_loAddress, (handPrefix + "/palm").c_str(), palmMsg);
     lo_message_free(palmMsg);
 
     // V3: Send velocity
@@ -76,7 +79,7 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_message_add_float(velMsg, result.velocity.vx);
     lo_message_add_float(velMsg, result.velocity.vy);
     lo_message_add_float(velMsg, result.velocity.vz);
-    lo_send_message(_loAddress, "/hand/velocity", velMsg);
+    lo_send_message(_loAddress, (handPrefix + "/velocity").c_str(), velMsg);
     lo_message_free(velMsg);
 
     // V3: Send gesture
@@ -84,13 +87,13 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_message_add_int32(gestMsg, static_cast<int32_t>(result.gesture));
     lo_message_add_float(gestMsg, result.gestureConfidence);
     lo_message_add_string(gestMsg, core::GestureFSM::getStateName(result.gesture));
-    lo_send_message(_loAddress, "/hand/gesture", gestMsg);
+    lo_send_message(_loAddress, (handPrefix + "/gesture").c_str(), gestMsg);
     lo_message_free(gestMsg);
 
     // V3: Send VIP status
     lo_message vipMsg = lo_message_new();
     lo_message_add_int32(vipMsg, result.vipLocked ? 1 : 0);
-    lo_send_message(_loAddress, "/hand/vip", vipMsg);
+    lo_send_message(_loAddress, (handPrefix + "/vip").c_str(), vipMsg);
     lo_message_free(vipMsg);
 
     // Legacy: Full tracking message (for backward compatibility)

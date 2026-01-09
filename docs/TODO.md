@@ -1,8 +1,8 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 2 - TensorRT Inference ✅ ABGESCHLOSSEN
+> **Aktuelle Phase:** Phase 2.7 - Gesten-Erkennung Fix
 > **Letztes Update:** 2026-01-09
-> **Status:** 🎉 MEILENSTEIN ERREICHT - Erste funktionierende Hand-Erkennung!
+> **Status:** 🔄 Finger-Extension Logik verbessert - Testing erforderlich
 
 ---
 
@@ -15,40 +15,56 @@ Zum ersten Mal haben wir:
 - ✅ **Skeleton-Rendering** - 21 Landmarks werden korrekt gezeichnet
 - ✅ **MJPEG Preview** - Hand-Skelett im Debug-Overlay sichtbar
 - ✅ **OSC Output** - Tracking-Daten werden gesendet
+- ✅ **Zwei Hände** - Beide Hände erkannt und getrackt
 
 **Dies markiert den erfolgreichen Abschluss von Phase 2!**
 
 ---
 
-## 🎯 Aktuelle Aufgabe
+## 🎯 Aktuelle Aufgabe: 2D Polish
 
-### Phase 2: TensorRT Inference - ✅ ABGESCHLOSSEN
-**Status:** Funktioniert!
+### Priorisierte Reihenfolge (User Request):
+1. ✅ **Zwei Hände erkennen** - FUNKTIONIERT
+2. 🔄 **Gesten-Erkennung für beide Hände** - Logik verbessert, Testing
+3. ⬜ **False Positive Filter** (Gesicht) - Bereits implementiert, funktioniert teilweise
+4. ⬜ **Erweiterung auf 3D** (Stereo Depth)
 
-**Was funktioniert:**
-- ✅ TensorRT Engine lädt und führt Inference aus
-- ✅ Palm Detection erkennt Hände im Bild
-- ✅ Hand Landmark extrahiert 21 Keypoints
-- ✅ Skeleton wird korrekt im MJPEG-Preview gezeichnet
-- ✅ HandTracker + GestureFSM verarbeiten die Daten
-- ✅ OSC sendet Tracking-Ergebnisse
+### Phase 2.6: Multi-Hand Support - ✅ FUNKTIONIERT
+**Was wurde hinzugefügt:**
+- ✅ `PalmDetector::detectAll()` - Erkennt bis zu 2 Hände
+- ✅ `nmsMulti()` mit echtem IoU-basiertem NMS
+- ✅ ProcessingLoop verarbeitet beide Hände parallel
+- ✅ 2x HandTracker (Kalman) + 2x GestureFSM
+- ✅ OSC Pfade mit Hand-ID: `/hand/0/palm`, `/hand/1/palm`
+- ✅ Debug-Overlay zeigt beide Hände (unterschiedliche Farben)
+- ✅ `TrackingResult.handId` für OSC-Routing
+- ✅ Bounding Box um GANZE Hand (alle 21 Landmarks)
 
-### Phase 2.5: Stats & OSC Integration - ✅ ABGESCHLOSSEN
+**Ergebnis:** 2 Hände werden erkannt und gut getrackt! ✅
 
-**Implementiert:**
-- ✅ ProcessingLoop: Hand-Stats in Terminal-Logs (Hands, Position, Velocity, Gesture, VIP)
-- ✅ ProcessingLoop: Debug-Overlay mit Hand-Info im MJPEG-Preview
-- ✅ OscSender: V3-Felder werden jetzt gesendet (/hand/palm, /hand/velocity, /hand/gesture, /hand/vip)
+### Phase 2.7: Gesten-Erkennung Fix - 🔄 IN PROGRESS
+**Problem:** Immer nur "FIVE" angezeigt (nicht "PALM" - das gibt es nicht mehr)
 
-### Phase 2.4: Model-Format-Fix - ✅ ABGESCHLOSSEN
+**Was gefixt wurde (2026-01-09):**
+- ✅ `isFingerExtended()` Logik komplett überarbeitet:
+  - AND statt OR für beide Checks (strenger)
+  - Threshold von 1.05x auf 1.15x erhöht
+  - Neuer Check: tip->mcp > dip->mcp * 1.2
+- ✅ `isThumbExtended()` verbessert:
+  - Threshold von 1.1x auf 1.2x erhöht
+  - Zusätzlicher "spread out" Check (1.3x)
+- ✅ Debug-Logs für Finger-Extension Werte (alle 60 Frames)
 
-**Was korrigiert wurde:**
-- ✅ PalmDetector.cpp: NHWC Input-Format
-- ✅ PalmDetector.cpp: 2 separate Outputs (boxes [2016,18] + scores [2016,1])
-- ✅ PalmDetector.cpp: 2016 Anchors (24×24×2 + 12×12×6)
-- ✅ HandLandmark.cpp: NHWC Input-Format
-- ✅ HandLandmark.cpp: 4 separate Outputs (landmarks, handedness, presence, world)
-- ✅ TensorRTEngine: inferMultiOutput() Methode hinzugefügt
+**Nächster Schritt:** Build & Test ob Gesten jetzt korrekt erkannt werden
+
+### Phase 2.8: False Positive Filter - TEILWEISE FUNKTIONIERT
+**Problem:** Gesicht wird als Hand erkannt (nur ohne Hände im Bild)
+
+**Beobachtung:**
+- ✅ False Positives verschwinden sobald eine echte Hand im Bild ist
+- ⚠️ Ohne Hände wird Gesicht manchmal erkannt
+
+**Nächster Schritt:** Score-Threshold erhöhen oder Face-Region ausschließen
 
 
 ### Phase 2.1: TensorRT Engine Wrapper

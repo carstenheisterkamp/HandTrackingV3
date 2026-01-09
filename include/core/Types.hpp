@@ -57,13 +57,34 @@ constexpr float STEREO_BASELINE_MM = 75.0f; // OAK-D Pro baseline
 // Data Structures
 // ============================================================
 
-// V3: Gesture States
+// V3: Gesture States (matching OSC_GESTURE_REFERENCE.md)
 enum class GestureState {
-    Idle = 0,   // No hand visible
-    Palm = 1,   // Hand open
-    Pinch = 2,  // Thumb + Index together
-    Grab = 3,   // Fist
-    Point = 4   // Only index extended
+    Idle = 0,       // No hand visible / unknown
+
+    // Basic gestures
+    Five = 1,       // 🖐️ All 5 fingers open (was "Palm")
+    Fist = 2,       // ✊ All fingers closed (was "Grab")
+    Pointing = 3,   // ☝️ Only index extended (was "Point")
+    Pinch = 4,      // Thumb + Index together
+
+    // Number gestures
+    ThumbsUp = 5,   // 👍 Only thumb extended
+    Two = 6,        // Thumb + Index extended
+    Three = 7,      // Thumb + Index + Middle
+    Four = 8,       // All except thumb
+
+    // Symbol gestures
+    Peace = 9,      // ✌️ Index + Middle
+    Metal = 10,     // 🤘 Index + Pinky
+    LoveYou = 11,   // 🤟 Thumb + Index + Pinky
+    CallMe = 12,    // 🤙 Thumb + Pinky
+    Vulcan = 13,    // 🖖 All 5, spread between Middle and Ring
+    MiddleFinger = 14, // 🖕 Only middle
+
+    // Legacy aliases (for backward compatibility)
+    Palm = Five,
+    Grab = Fist,
+    Point = Pointing
 };
 
 // V3: 3D Point with velocity
@@ -83,6 +104,9 @@ struct TrackingResult {
     struct NormalizedPoint {
         float x, y, z;
     };
+
+    // V3: Hand identification (0 or 1 for 2-hand tracking)
+    int handId = 0;
 
     std::vector<NormalizedPoint> landmarks; // 21 points * 3 coords
     bool vipLocked = false;

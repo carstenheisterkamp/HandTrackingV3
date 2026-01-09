@@ -43,9 +43,11 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
       _oscQueue(std::move(oscQueue)),
       _running(false) {
 
-    // V3: Initialize tracking components
-    _handTracker = std::make_unique<HandTracker>();
-    _gestureFSM = std::make_unique<GestureFSM>();
+    // V3: Initialize tracking components for 2 hands
+    for (int i = 0; i < MAX_HANDS; ++i) {
+        _handTrackers[i] = std::make_unique<HandTracker>();
+        _gestureFSMs[i] = std::make_unique<GestureFSM>();
+    }
     _stereoDepth = std::make_unique<StereoDepth>();
 
     // Note: TensorRT initialization moved to initInference()
@@ -194,13 +196,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
         Logger::info("Stereo: ", frame->hasStereoData ? "Available" : "Disabled");
         Logger::info("MJPEG: ", (_mjpegServer && _mjpegServer->hasClients()) ? "Clients connected" : "No clients");
 
-        // Hand tracking stats (REQUIRED for visibility)
+        // Hand tracking stats (for both hands)
         Logger::info("🖐 Hands Detected: ", _lastHandCount);
-        if (_lastHandCount > 0) {
-            Logger::info("   Position: (", _lastPalmX, ", ", _lastPalmY, ", ", _lastPalmZ, ")");
-            Logger::info("   Velocity: (", _lastVelX, ", ", _lastVelY, ")");
-            Logger::info("   Gesture: ", _lastGesture);
-            Logger::info("   VIP Locked: ", _lastVipLocked ? "Yes" : "No");
+        for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
+            Logger::info("   Hand ", h, ":");
+            Logger::info("     Position: (", _handStates[h].palmX, ", ", _handStates[h].palmY, ", ", _handStates[h].palmZ, ")");
+            Logger::info("     Velocity: (", _handStates[h].velX, ", ", _handStates[h].velY, ")");
+            Logger::info("     Gesture: ", _handStates[h].gesture);
         }
         Logger::info("TensorRT: ", _inferenceInitialized ? "Ready" : "Not initialized");
 
@@ -252,7 +254,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // Step 2: TensorRT Inference (Palm + Landmarks)
+    // Step 2: TensorRT Inference (Palm + Landmarks) - 2 HANDS
     // ═══════════════════════════════════════════════════════════
 
 #ifdef ENABLE_TENSORRT
@@ -269,61 +271,86 @@ void ProcessingLoop::processFrame(Frame* frame) {
             Logger::info("🔍 Running Palm Detection inference (attempt ", inferenceAttempts, ")...");
         }
 
-        // Palm Detection
-        auto palmDetection = _palmDetector->detect(
+        // Palm Detection - detect ALL hands (up to 2)
+        auto palmDetections = _palmDetector->detectAll(
             frame->data.get(),
             static_cast<int>(frame->width),
-            static_cast<int>(frame->height)
+            static_cast<int>(frame->height),
+            MAX_HANDS
         );
 
-        if (palmDetection) {
-            // Debug log (every 30 frames)
-            static int detectionCount = 0;
-            if (++detectionCount % 30 == 1) {
-                Logger::info("🖐 Palm detected! Score: ", palmDetection->score,
-                            " Pos: (", palmDetection->x, ", ", palmDetection->y, ")");
-            }
-        } else {
-            // No detection - log periodically
-            static int noDetectionCount = 0;
-            if (++noDetectionCount % 60 == 1) {
-                Logger::info("❌ No palm detected (frame ", noDetectionCount, ")");
+        // Debug log
+        static int detectionLogCounter = 0;
+        if (++detectionLogCounter % 30 == 1) {
+            if (!palmDetections.empty()) {
+                Logger::info("🖐 ", palmDetections.size(), " palm(s) detected!");
+                for (size_t i = 0; i < palmDetections.size(); ++i) {
+                    Logger::info("   Hand ", i, ": Score=", palmDetections[i].score,
+                                " Pos=(", palmDetections[i].x, ", ", palmDetections[i].y, ")");
+                }
+            } else {
+                Logger::info("❌ No palms detected");
             }
         }
 
-        if (palmDetection) {
-            // Draw palm BBox
-            if (!debugFrame.empty()) {
-                int cx = static_cast<int>(palmDetection->x * debugFrame.cols);
-                int cy = static_cast<int>(palmDetection->y * debugFrame.rows);
-                int w = static_cast<int>(palmDetection->width * debugFrame.cols);
-                int h = static_cast<int>(palmDetection->height * debugFrame.rows);
-                cv::rectangle(debugFrame, cv::Rect(cx - w/2, cy - h/2, w, h), cv::Scalar(0, 255, 0), 2);
-                cv::circle(debugFrame, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 255), -1);
-            }
+        // Time delta for Kalman
+        static auto lastTime = std::chrono::steady_clock::now();
+        auto currentTime = std::chrono::steady_clock::now();
+        float dt = std::chrono::duration<float>(currentTime - lastTime).count();
+        lastTime = currentTime;
+
+        // Process each detected hand
+        int handCount = 0;
+        for (size_t h = 0; h < palmDetections.size() && h < MAX_HANDS; ++h) {
+            const auto& palmDetection = palmDetections[h];
 
             // Hand Landmark Inference
             auto landmarks = _handLandmark->infer(
                 frame->data.get(),
                 static_cast<int>(frame->width),
                 static_cast<int>(frame->height),
-                *palmDetection
+                palmDetection
             );
 
             if (landmarks) {
-                // Debug log
-                static int landmarkCount = 0;
-                if (++landmarkCount % 30 == 1) {
-                    Logger::info("✋ Landmarks! Presence: ", landmarks->presence);
-                }
-
-                // Draw landmarks
+                // Draw bounding box around ENTIRE hand (all landmarks)
                 if (!debugFrame.empty()) {
+                    cv::Scalar boxColor = (h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0);
+                    cv::Scalar pointColor = (h == 0) ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255);
+                    cv::Scalar tipColor = (h == 0) ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 0, 255);
+                    cv::Scalar lineColor = boxColor;
+
+                    // Calculate bounding box from all landmarks
+                    float minX = 1.0f, maxX = 0.0f, minY = 1.0f, maxY = 0.0f;
+                    for (const auto& lm : landmarks->landmarks) {
+                        minX = std::min(minX, lm.x);
+                        maxX = std::max(maxX, lm.x);
+                        minY = std::min(minY, lm.y);
+                        maxY = std::max(maxY, lm.y);
+                    }
+
+                    // Add padding (10%)
+                    float padX = (maxX - minX) * 0.1f;
+                    float padY = (maxY - minY) * 0.1f;
+                    int bx1 = static_cast<int>((minX - padX) * debugFrame.cols);
+                    int by1 = static_cast<int>((minY - padY) * debugFrame.rows);
+                    int bx2 = static_cast<int>((maxX + padX) * debugFrame.cols);
+                    int by2 = static_cast<int>((maxY + padY) * debugFrame.rows);
+
+                    cv::rectangle(debugFrame, cv::Point(bx1, by1), cv::Point(bx2, by2), boxColor, 2);
+
+                    // Draw hand label
+                    char labelStr[16];
+                    snprintf(labelStr, sizeof(labelStr), "Hand %zu", h);
+                    cv::putText(debugFrame, labelStr, cv::Point(bx1, by1 - 5),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.4, boxColor, 1);
+
+                    // Draw landmarks
                     for (size_t i = 0; i < landmarks->landmarks.size(); ++i) {
                         int lx = static_cast<int>(landmarks->landmarks[i].x * debugFrame.cols);
                         int ly = static_cast<int>(landmarks->landmarks[i].y * debugFrame.rows);
                         cv::Scalar color = (i == 4 || i == 8 || i == 12 || i == 16 || i == 20)
-                            ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 0, 0);
+                            ? tipColor : pointColor;
                         cv::circle(debugFrame, cv::Point(lx, ly), 3, color, -1);
                     }
 
@@ -334,61 +361,56 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     for (const auto& c : conns) {
                         if (c[0] < (int)landmarks->landmarks.size() && c[1] < (int)landmarks->landmarks.size()) {
                             cv::line(debugFrame,
-                                cv::Point(landmarks->landmarks[c[0]].x * debugFrame.cols,
-                                          landmarks->landmarks[c[0]].y * debugFrame.rows),
-                                cv::Point(landmarks->landmarks[c[1]].x * debugFrame.cols,
-                                          landmarks->landmarks[c[1]].y * debugFrame.rows),
-                                cv::Scalar(0, 255, 0), 1);
+                                cv::Point(static_cast<int>(landmarks->landmarks[c[0]].x * debugFrame.cols),
+                                          static_cast<int>(landmarks->landmarks[c[0]].y * debugFrame.rows)),
+                                cv::Point(static_cast<int>(landmarks->landmarks[c[1]].x * debugFrame.cols),
+                                          static_cast<int>(landmarks->landmarks[c[1]].y * debugFrame.rows)),
+                                lineColor, 1);
                         }
                     }
                 }
 
-                // Kalman + Gesture + OSC
-                static auto lastTime = std::chrono::steady_clock::now();
-                auto currentTime = std::chrono::steady_clock::now();
-                float dt = std::chrono::duration<float>(currentTime - lastTime).count();
-                lastTime = currentTime;
-
-                float palmZ = 500.0f;
-                if (frame->hasStereoData && _stereoDepth) {
-                    palmZ = _stereoDepth->getDepthAtPoint(
-                        frame->monoLeftData.get(), frame->monoRightData.get(),
-                        (int)frame->monoWidth, (int)frame->monoHeight,
-                        (int)(landmarks->palmCenterX * frame->monoWidth),
-                        (int)(landmarks->palmCenterY * frame->monoHeight));
-                }
+                // Kalman + Gesture (per hand)
+                float palmZ = 0.0f;  // TODO: Phase 4 - Stereo Depth
 
                 Point3D palm3D = {landmarks->palmCenterX, landmarks->palmCenterY, palmZ};
-                _handTracker->predict(dt);
-                _handTracker->update(palm3D);
+                _handTrackers[h]->predict(dt);
+                _handTrackers[h]->update(palm3D);
 
                 std::vector<TrackingResult::NormalizedPoint> lmPoints;
                 for (const auto& lm : landmarks->landmarks) lmPoints.push_back(lm);
-                auto gesture = _gestureFSM->update(lmPoints);
+                auto gesture = _gestureFSMs[h]->update(lmPoints);
 
+                // Build TrackingResult for OSC
                 TrackingResult result;
-                result.palmPosition = _handTracker->getPosition();
-                result.velocity = _handTracker->getVelocity();
+                result.handId = static_cast<int>(h);  // Hand ID for OSC routing
+                result.palmPosition = _handTrackers[h]->getPosition();
+                result.velocity = _handTrackers[h]->getVelocity();
                 result.gesture = gesture;
-                result.vipLocked = _handTracker->isLocked();
+                result.vipLocked = _handTrackers[h]->isLocked();
                 result.timestamp = std::chrono::steady_clock::now();
                 for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i)
                     result.landmarks.push_back(landmarks->landmarks[i]);
                 _oscQueue->try_push(result);
 
                 // Update tracking state for stats display
-                _lastHandCount = 1;
-                _lastPalmX = result.palmPosition.x;
-                _lastPalmY = result.palmPosition.y;
-                _lastPalmZ = result.palmPosition.z;
-                _lastVelX = result.velocity.vx;
-                _lastVelY = result.velocity.vy;
-                _lastGesture = GestureFSM::getStateName(gesture);
-                _lastVipLocked = result.vipLocked;
+                _handStates[h].palmX = result.palmPosition.x;
+                _handStates[h].palmY = result.palmPosition.y;
+                _handStates[h].palmZ = result.palmPosition.z;
+                _handStates[h].velX = result.velocity.vx;
+                _handStates[h].velY = result.velocity.vy;
+                _handStates[h].gesture = GestureFSM::getStateName(gesture);
+                _handStates[h].vipLocked = result.vipLocked;
+
+                handCount++;
             }
-        } else {
-            // No palm detected - reset hand count
-            _lastHandCount = 0;
+        }
+
+        _lastHandCount = handCount;
+
+        // Reset unused hand trackers (prediction only mode)
+        for (int h = handCount; h < MAX_HANDS; ++h) {
+            _handTrackers[h]->predict(dt);  // Keep predicting to avoid jumps
         }
     }
 #endif
@@ -421,9 +443,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
 }
 
 void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
-    // Semi-transparent status box (larger for hand info)
+    // Semi-transparent status box (larger for 2-hand info with velocity)
+    int boxHeight = 100 + (_lastHandCount > 0 ? _lastHandCount * 75 : 0);
     cv::Mat overlay = debugFrame.clone();
-    cv::rectangle(overlay, cv::Rect(5, 5, 280, 160), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::rectangle(overlay, cv::Rect(5, 5, 280, boxHeight), cv::Scalar(0, 0, 0), cv::FILLED);
     cv::addWeighted(overlay, 0.6, debugFrame, 0.4, 0, debugFrame);
 
     int y = 22;
@@ -441,7 +464,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     // FPS
     cv::Scalar fpsColor = (_currentFps >= 28) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
     char fpsStr[32];
-    snprintf(fpsStr, sizeof(fpsStr), "FPS: %.1f", _currentFps);
+    snprintf(fpsStr, sizeof(fpsStr), "FPS: %.1f", static_cast<double>(_currentFps));
     cv::putText(debugFrame, fpsStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, fpsColor, 1);
     y += lineHeight;
 
@@ -458,26 +481,34 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::putText(debugFrame, handStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, handColor, 1);
     y += lineHeight;
 
-    // If hand detected, show details
-    if (_lastHandCount > 0) {
+    // Show details for each detected hand
+    for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
+        const auto& state = _handStates[h];
+        cv::Scalar labelColor = (h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0);
+
+        char labelStr[32];
+        snprintf(labelStr, sizeof(labelStr), "Hand %d:", h);
+        cv::putText(debugFrame, labelStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, labelColor, 1);
+        y += lineHeight;
+
         char posStr[64];
-        snprintf(posStr, sizeof(posStr), "Pos: (%.2f, %.2f, %.0f)", _lastPalmX, _lastPalmY, _lastPalmZ);
-        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 255, 200), 1);
-        y += lineHeight;
+        snprintf(posStr, sizeof(posStr), "  Pos: (%.2f, %.2f)",
+                 static_cast<double>(state.palmX), static_cast<double>(state.palmY));
+        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 255, 200), 1);
+        y += lineHeight - 4;
 
+        // Velocity display
         char velStr[64];
-        snprintf(velStr, sizeof(velStr), "Vel: (%.2f, %.2f)", _lastVelX, _lastVelY);
-        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(200, 200, 255), 1);
-        y += lineHeight;
+        snprintf(velStr, sizeof(velStr), "  Vel: (%.2f, %.2f)",
+                 static_cast<double>(state.velX), static_cast<double>(state.velY));
+        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 200, 255), 1);
+        y += lineHeight - 4;
 
-        std::string gestureStr = "Gesture: " + _lastGesture;
-        cv::Scalar gestureColor = (_lastGesture != "None") ? cv::Scalar(0, 255, 255) : cv::Scalar(200, 200, 200);
-        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, gestureColor, 1);
+        std::string gestureStr = "  Gesture: " + state.gesture;
+        cv::Scalar gestureColor = (state.gesture != "None" && state.gesture != "Palm")
+            ? cv::Scalar(0, 255, 255) : cv::Scalar(200, 200, 200);
+        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, gestureColor, 1);
         y += lineHeight;
-
-        std::string vipStr = _lastVipLocked ? "VIP: LOCKED" : "VIP: Tracking...";
-        cv::Scalar vipColor = _lastVipLocked ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 200, 0);
-        cv::putText(debugFrame, vipStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, vipColor, 1);
     }
 
     // System Performance (update every 5s) - bottom of frame

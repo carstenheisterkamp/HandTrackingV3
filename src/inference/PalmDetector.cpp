@@ -186,6 +186,52 @@ std::optional<PalmDetector::Detection> PalmDetector::detect(
     return best;
 }
 
+std::vector<PalmDetector::Detection> PalmDetector::detectAll(
+    const uint8_t* nv12Data, int frameWidth, int frameHeight, int maxHands) {
+
+    if (!initialized_) {
+        core::Logger::error("PalmDetector not initialized");
+        return {};
+    }
+
+    // Preprocess: NV12 → RGB → Resize → Normalize
+    preprocessNV12(nv12Data, frameWidth, frameHeight);
+
+    // Run inference with multiple outputs
+    std::vector<void*> outputPtrs = {outputBuffer_.data(), scoresBuffer_.data()};
+    if (!engine_->inferMultiOutput(inputBuffer_.data(), outputPtrs)) {
+        core::Logger::error("PalmDetector inference failed");
+        return {};
+    }
+
+    // Decode output
+    auto detections = decodeOutput(outputBuffer_.data(), scoresBuffer_.data());
+
+    // Debug: Log detection stats
+    static int detectAllCounter = 0;
+    if (++detectAllCounter % 60 == 1) {
+        core::Logger::info("🔍 detectAll: raw detections=", detections.size());
+    }
+
+    if (detections.empty()) {
+        return {};
+    }
+
+    // Multi-hand NMS
+    auto results = nmsMulti(detections, maxHands);
+
+    if (detectAllCounter % 60 == 1) {
+        core::Logger::info("   After NMS: ", results.size(), " hands");
+    }
+
+    // Unletterbox all detections
+    for (auto& det : results) {
+        unletterbox(det, frameWidth, frameHeight);
+    }
+
+    return results;
+}
+
 std::optional<PalmDetector::Detection> PalmDetector::detectFromRGB(const float* rgbData) {
     if (!initialized_) {
         return std::nullopt;
@@ -314,6 +360,42 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
         det.width = dw;
         det.height = dh;
 
+        // ═══════════════════════════════════════════════════════════
+        // FALSE POSITIVE FILTER: Reject face-like detections
+        // ═══════════════════════════════════════════════════════════
+
+        // Filter 1: Aspect ratio - palms are roughly square
+        // Very loose filter to avoid rejecting rotated hands
+        float aspectRatio = (det.height > 0.001f) ? det.width / det.height : 1.0f;
+        if (aspectRatio < 0.3f || aspectRatio > 3.0f) {
+            // Debug: Log rejected detections
+            static int rejectCount1 = 0;
+            if (++rejectCount1 % 100 == 1) {
+                core::Logger::info("🚫 Filter1 reject: aspect=", aspectRatio);
+            }
+            continue;  // Too elongated - likely not a palm
+        }
+
+        // Filter 2: Size sanity check - palm shouldn't be too small or too large
+        float area = det.width * det.height;
+        if (area < 0.002f || area > 0.8f) {
+            static int rejectCount2 = 0;
+            if (++rejectCount2 % 100 == 1) {
+                core::Logger::info("🚫 Filter2 reject: area=", area);
+            }
+            continue;  // Unrealistic size
+        }
+
+        // Filter 3: Position check - faces are usually in upper third of frame
+        // Only reject if BOTH upper position AND very low score
+        if (det.y < 0.25f && det.score < 0.5f) {
+            static int rejectCount3 = 0;
+            if (++rejectCount3 % 100 == 1) {
+                core::Logger::info("🚫 Filter3 reject: y=", det.y, " score=", det.score);
+            }
+            continue;  // Likely face in upper frame with weak score
+        }
+
         // Decode keypoints (7 keypoints, each x,y relative to anchor)
         for (int k = 0; k < 7; ++k) {
             float kpx = box[4 + k * 2] / static_cast<float>(config_.inputWidth);
@@ -344,6 +426,71 @@ PalmDetector::Detection PalmDetector::nms(const std::vector<Detection>& detectio
         });
 
     return *best;
+}
+
+float PalmDetector::computeIoU(const Detection& a, const Detection& b) {
+    // Convert center-size to corners
+    float a_x1 = a.x - a.width / 2.0f;
+    float a_y1 = a.y - a.height / 2.0f;
+    float a_x2 = a.x + a.width / 2.0f;
+    float a_y2 = a.y + a.height / 2.0f;
+
+    float b_x1 = b.x - b.width / 2.0f;
+    float b_y1 = b.y - b.height / 2.0f;
+    float b_x2 = b.x + b.width / 2.0f;
+    float b_y2 = b.y + b.height / 2.0f;
+
+    // Intersection
+    float inter_x1 = std::max(a_x1, b_x1);
+    float inter_y1 = std::max(a_y1, b_y1);
+    float inter_x2 = std::min(a_x2, b_x2);
+    float inter_y2 = std::min(a_y2, b_y2);
+
+    float interWidth = std::max(0.0f, inter_x2 - inter_x1);
+    float interHeight = std::max(0.0f, inter_y2 - inter_y1);
+    float interArea = interWidth * interHeight;
+
+    // Union
+    float a_area = a.width * a.height;
+    float b_area = b.width * b.height;
+    float unionArea = a_area + b_area - interArea;
+
+    if (unionArea <= 0.0f) return 0.0f;
+    return interArea / unionArea;
+}
+
+std::vector<PalmDetector::Detection> PalmDetector::nmsMulti(
+    const std::vector<Detection>& detections, int maxHands) {
+
+    if (detections.empty()) return {};
+
+    // Sort by score descending
+    std::vector<Detection> sorted = detections;
+    std::sort(sorted.begin(), sorted.end(),
+        [](const Detection& a, const Detection& b) {
+            return a.score > b.score;
+        });
+
+    std::vector<Detection> results;
+    std::vector<bool> suppressed(sorted.size(), false);
+
+    for (size_t i = 0; i < sorted.size() && results.size() < static_cast<size_t>(maxHands); ++i) {
+        if (suppressed[i]) continue;
+
+        results.push_back(sorted[i]);
+
+        // Suppress overlapping detections
+        for (size_t j = i + 1; j < sorted.size(); ++j) {
+            if (suppressed[j]) continue;
+
+            float iou = computeIoU(sorted[i], sorted[j]);
+            if (iou > config_.nmsThreshold) {
+                suppressed[j] = true;
+            }
+        }
+    }
+
+    return results;
 }
 
 void PalmDetector::unletterbox(Detection& det, int origWidth, int origHeight) {

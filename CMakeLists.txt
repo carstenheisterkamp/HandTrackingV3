@@ -43,15 +43,26 @@ else()
 endif()
 
 # TensorRT Support (for V3 inference on Jetson)
-find_library(NVINFER_LIB nvinfer PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
-find_library(NVONNXPARSER_LIB nvonnxparser PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
-find_path(TENSORRT_INCLUDE_DIR NvInfer.h PATHS /usr/include/aarch64-linux-gnu /usr/local/include)
+# TensorRT 10.x uses versioned library names (e.g., libnvinfer.so.10)
+find_library(NVINFER_LIB NAMES nvinfer nvinfer.so.10
+    PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
+find_library(NVONNXPARSER_LIB NAMES nvonnxparser nvonnxparser.so.10
+    PATHS /usr/lib/aarch64-linux-gnu /usr/local/lib)
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+    PATHS /usr/include/aarch64-linux-gnu /usr/include /usr/local/include)
 
 if(NVINFER_LIB AND NVONNXPARSER_LIB AND TENSORRT_INCLUDE_DIR)
-    message(STATUS "TensorRT found: ${NVINFER_LIB}")
+    message(STATUS "TensorRT found:")
+    message(STATUS "  nvinfer: ${NVINFER_LIB}")
+    message(STATUS "  nvonnxparser: ${NVONNXPARSER_LIB}")
+    message(STATUS "  includes: ${TENSORRT_INCLUDE_DIR}")
     set(TENSORRT_FOUND TRUE)
+    include_directories(${TENSORRT_INCLUDE_DIR})
 else()
     message(WARNING "TensorRT not found. V3 inference will be disabled.")
+    message(WARNING "  NVINFER_LIB: ${NVINFER_LIB}")
+    message(WARNING "  NVONNXPARSER_LIB: ${NVONNXPARSER_LIB}")
+    message(WARNING "  TENSORRT_INCLUDE_DIR: ${TENSORRT_INCLUDE_DIR}")
     set(TENSORRT_FOUND FALSE)
 endif()
 

@@ -114,8 +114,15 @@ private:
     [[nodiscard]] bool isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
                                         int mcp, int pip, int dip, int tip) const;
 
+    [[nodiscard]] bool isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
+
+    [[nodiscard]] bool isVulcanSpread(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
+
     [[nodiscard]] float distance(const TrackingResult::NormalizedPoint& a,
                                  const TrackingResult::NormalizedPoint& b) const;
+
+    [[nodiscard]] float distance2D(const TrackingResult::NormalizedPoint& a,
+                                   const TrackingResult::NormalizedPoint& b) const;
 
     [[nodiscard]] float getHandSize(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
     [[nodiscard]] float getPinchDistance(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
