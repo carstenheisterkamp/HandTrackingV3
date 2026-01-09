@@ -1,6 +1,10 @@
 /**
  * V3 TensorRT Engine Wrapper Implementation
  *
+ * NOTE: This file only compiles on Jetson (requires TensorRT + CUDA).
+ * CLion on macOS will show errors - this is expected and can be ignored.
+ * The Remote Host build on Jetson works correctly.
+ *
  * Supports:
  * - Loading pre-built .engine files
  * - Building engines from .onnx (with caching)
@@ -164,8 +168,7 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
         return false;
     }
 
-    // Create network with explicit batch (TensorRT 8.5+ default)
-    // Note: kEXPLICIT_BATCH is deprecated in 8.5+, explicit batch is now default
+    // Create network (TensorRT 10.x: explicit batch is default, pass 0)
     auto network = builder->createNetworkV2(0);
     if (!network) {
         core::Logger::error("Failed to create network");
