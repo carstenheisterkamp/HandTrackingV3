@@ -29,7 +29,7 @@ public:
         std::string modelPath = "models/palm_detection.onnx";
         int inputWidth = 192;
         int inputHeight = 192;
-        float scoreThreshold = 0.6f;  // Increased from 0.3 to reduce false positives (faces)
+        float scoreThreshold = 0.75f;  // Increased to 0.75 to strongly reduce false positives
         float nmsThreshold = 0.4f;
     };
 

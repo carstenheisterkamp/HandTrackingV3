@@ -111,6 +111,12 @@ private:
     [[nodiscard]] GestureState detectGesture(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
     [[nodiscard]] GestureState detectOpenHand(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
 
+    // Finger curl: 0.0 = fully extended, 1.0 = fully curled
+    [[nodiscard]] float getFingerCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                       int mcp, int pip, int dip, int tip) const;
+
+    [[nodiscard]] float getThumbCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
+
     [[nodiscard]] bool isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
                                         int mcp, int pip, int dip, int tip) const;
 

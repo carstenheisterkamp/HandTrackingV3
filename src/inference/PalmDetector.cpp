@@ -386,14 +386,14 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
             continue;  // Unrealistic size
         }
 
-        // Filter 3: Position check - faces are usually in upper third of frame
-        // Only reject if BOTH upper position AND very low score
-        if (det.y < 0.25f && det.score < 0.5f) {
+        // Filter 3: Position check - faces are usually in upper portion of frame
+        // Aggressively reject detections in upper 40% unless very high score
+        if (det.y < 0.40f && det.score < 0.85f) {
             static int rejectCount3 = 0;
             if (++rejectCount3 % 100 == 1) {
-                core::Logger::info("🚫 Filter3 reject: y=", det.y, " score=", det.score);
+                core::Logger::info("🚫 Filter3 reject (face zone): y=", det.y, " score=", det.score);
             }
-            continue;  // Likely face in upper frame with weak score
+            continue;  // Likely face in upper frame
         }
 
         // Decode keypoints (7 keypoints, each x,y relative to anchor)
