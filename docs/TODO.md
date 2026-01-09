@@ -16,7 +16,8 @@
 
 ### Phase 2.2: Palm Detection
 - [x] PalmDetector.hpp/.cpp erstellen
-- [ ] ONNX Model beschaffen/konvertieren
+- [x] TFLite Model heruntergeladen (palm_detection_lite.tflite)
+- [ ] TFLite → ONNX konvertieren (auf Jetson: convert_to_onnx.py)
 - [x] NV12 → RGB Preprocessing (GPU)
 - [x] Post-Processing (BBox, Score, Anchors)
 
@@ -29,7 +30,8 @@
 ### Phase 2.4: ProcessingLoop Integration
 - [x] PalmDetector + HandLandmark in ProcessingLoop einbinden
 - [x] HandTracker + GestureFSM integrieren
-- [ ] ONNX Models beschaffen/konvertieren
+- [x] TFLite Models heruntergeladen
+- [ ] TFLite → ONNX konvertieren (auf Jetson)
 - [ ] Test: 30+ FPS mit NNs verifizieren
 
 ---
