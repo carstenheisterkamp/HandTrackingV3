@@ -2,6 +2,8 @@
 # Kill old HandTrackingService process and reset OAK-D connection
 # Run this before starting a new instance after a crash/force-kill
 
+OAK_IP="169.254.1.222"
+
 echo "=== Stopping HandTrackingService and resetting OAK-D ==="
 
 # Stop systemd service
@@ -22,11 +24,21 @@ if lsof -i :8080 -t >/dev/null 2>&1; then
     sleep 1
 fi
 
+# ══════════════════════════════════════════════════════════════
+# CRITICAL: Clear ARP cache for OAK-D IP
+# This fixes "device not found" after hard process kill
+# ══════════════════════════════════════════════════════════════
+echo "Clearing ARP cache for OAK-D ($OAK_IP)..."
+sudo arp -d $OAK_IP 2>/dev/null || true
+sudo ip neigh flush dev eth0 2>/dev/null || true
+sudo ip neigh flush dev eth1 2>/dev/null || true
+
 # Reset XLink by reloading network interface (for PoE)
 # This forces the OAK-D to re-establish connection
 echo "Resetting network interface for OAK-D PoE..."
-IFACE=$(ip route get 169.254.1.222 2>/dev/null | grep -oP 'dev \K\S+')
+IFACE=$(ip route get $OAK_IP 2>/dev/null | grep -oP 'dev \K\S+')
 if [ -n "$IFACE" ]; then
+    echo "  Interface: $IFACE"
     sudo ip link set $IFACE down 2>/dev/null || true
     sleep 1
     sudo ip link set $IFACE up 2>/dev/null || true
@@ -34,10 +46,15 @@ if [ -n "$IFACE" ]; then
     echo "✓ Network interface $IFACE reset"
 fi
 
-# Alternative: Ping the OAK-D to ensure it's responsive
+# Re-ping to refresh ARP cache with correct MAC
+echo "Refreshing ARP cache..."
+ping -c 2 -W 1 $OAK_IP >/dev/null 2>&1 || true
+
+# Verify connection
 echo "Checking OAK-D connection..."
-if ping -c 1 -W 2 169.254.1.222 >/dev/null 2>&1; then
-    echo "✓ OAK-D Pro PoE is reachable"
+if ping -c 1 -W 2 $OAK_IP >/dev/null 2>&1; then
+    echo "✓ OAK-D Pro PoE is reachable at $OAK_IP"
+    arp -n $OAK_IP 2>/dev/null || true
 else
     echo "⚠ OAK-D not responding - may need physical power cycle"
 fi

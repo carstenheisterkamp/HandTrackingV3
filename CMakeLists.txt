@@ -204,13 +204,15 @@ add_custom_command(TARGET HandTrackingService POST_BUILD
     COMMENT "Copying models directory to build output..."
 )
 
-# Pre-build: Kill old service to free OAK-D connection (only on Jetson)
+# Pre-build: Kill old service and clear ARP cache to free OAK-D connection (only on Jetson)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
     add_custom_command(TARGET HandTrackingService PRE_BUILD
         COMMAND pkill -SIGTERM HandTrackingService 2>/dev/null || true
         COMMAND sleep 1
         COMMAND pkill -9 HandTrackingService 2>/dev/null || true
-        COMMENT "Stopping old HandTrackingService to free OAK-D..."
+        COMMAND sudo arp -d 169.254.1.222 2>/dev/null || true
+        COMMAND ping -c 1 -W 1 169.254.1.222 >/dev/null 2>&1 || true
+        COMMENT "Stopping old HandTrackingService and clearing ARP cache..."
     )
 endif()
 
