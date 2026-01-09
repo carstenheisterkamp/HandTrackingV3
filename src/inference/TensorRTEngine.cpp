@@ -339,7 +339,7 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         return false;
     }
 
-    // Run inference
+    // Run inference (async on default stream)
     bool success = context_->enqueueV3(nullptr);
 
     if (!success) {
@@ -347,9 +347,16 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         return false;
     }
 
+    // CRITICAL: Synchronize before copying output (enqueueV3 is async!)
+    cudaStreamSynchronize(nullptr);
+
     // Copy output to host
     size_t outputBytes = outputInfo_.size * sizeof(float);
-    cudaMemcpy(outputData, d_output_, outputBytes, cudaMemcpyDeviceToHost);
+    err = cudaMemcpy(outputData, d_output_, outputBytes, cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        core::Logger::error("CUDA memcpy output failed: ", cudaGetErrorString(err));
+        return false;
+    }
 
     return true;
 }

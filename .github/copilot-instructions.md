@@ -108,6 +108,41 @@ Keep this short reference at hand — it captures the device features and the en
 
 ---
 
+## 🤖 TensorRT 8.5+ API (Jetson Orin)
+
+**CRITICAL:** The Jetson Orin runs TensorRT 8.5+. Many old TensorRT APIs are deprecated or removed. Always use the new APIs:
+
+### Deprecated → New API Mapping
+
+| ❌ Old (Deprecated) | ✅ New (TensorRT 8.5+) |
+|---------------------|------------------------|
+| `createNetworkV2(kEXPLICIT_BATCH)` | `createNetworkV2(0)` - explicit batch is now default |
+| `engine->getNbBindings()` | `engine->getNbIOTensors()` |
+| `engine->getBindingName(i)` | `engine->getIOTensorName(i)` |
+| `engine->bindingIsInput(i)` | `engine->getTensorIOMode(name) == TensorIOMode::kINPUT` |
+| `engine->getBindingDimensions(i)` | `engine->getTensorShape(name)` |
+| `context->executeV2(bindings)` | `context->setTensorAddress(name, ptr)` + `context->enqueueV3(stream)` |
+| `context->enqueueV2(bindings, stream, events)` | `context->setTensorAddress(name, ptr)` + `context->enqueueV3(stream)` |
+
+### Inference Pattern (TensorRT 8.5+)
+
+```cpp
+// ✅ CORRECT: TensorRT 8.5+ inference
+context_->setTensorAddress(inputInfo_.name.c_str(), d_input_);
+context_->setTensorAddress(outputInfo_.name.c_str(), d_output_);
+bool success = context_->enqueueV3(cudaStream);
+cudaStreamSynchronize(cudaStream);  // CRITICAL: enqueueV3 is async!
+```
+
+### Common Pitfalls
+
+1. **Missing Stream Sync:** `enqueueV3()` is async - always call `cudaStreamSynchronize()` before reading output
+2. **Wrong Tensor Names:** Use exact names from ONNX model, not positional indices
+3. **Missing Null Checks:** Check `engine_`, `context_`, tensor names before use
+4. **Buffer Size Mismatch:** Verify `inputInfo_.size` matches expected model input
+
+---
+
 ## ⚡ Advanced Implementation Rules (DepthAI v3 & Jetson Orin)
 
 ### 1. API Clarity & v3 Paradigm
