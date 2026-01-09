@@ -69,6 +69,7 @@ private:
     std::unique_ptr<inference::PalmDetector> _palmDetector;
     std::unique_ptr<inference::HandLandmark> _handLandmark;
     bool _inferenceInitialized = false;
+    bool _inferenceAttempted = false;
 
     // Debug Preview
     std::unique_ptr<net::MjpegServer> _mjpegServer;

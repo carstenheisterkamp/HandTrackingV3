@@ -17,14 +17,15 @@
 #include "core/GestureFSM.hpp"
 #include "core/StereoDepth.hpp"
 
+#include <filesystem>
+#include <chrono>
+#include <algorithm>
+#include <opencv2/imgproc.hpp>
+
 #ifdef ENABLE_TENSORRT
 #include "inference/PalmDetector.hpp"
 #include "inference/HandLandmark.hpp"
 #endif
-
-#include <chrono>
-#include <algorithm>
-#include <opencv2/imgproc.hpp>
 
 #ifdef ENABLE_CUDA
 #include "core/StereoKernel.hpp"
@@ -47,26 +48,8 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
     _gestureFSM = std::make_unique<GestureFSM>();
     _stereoDepth = std::make_unique<StereoDepth>();
 
-#ifdef ENABLE_TENSORRT
-    // V3 Phase 2: Initialize TensorRT inference
-    _palmDetector = std::make_unique<inference::PalmDetector>();
-    _handLandmark = std::make_unique<inference::HandLandmark>();
-
-    inference::PalmDetector::Config palmConfig;
-    palmConfig.modelPath = "models/palm_detection.onnx";
-
-    inference::HandLandmark::Config landmarkConfig;
-    landmarkConfig.modelPath = "models/hand_landmark.onnx";
-
-    if (_palmDetector->init(palmConfig) && _handLandmark->init(landmarkConfig)) {
-        _inferenceInitialized = true;
-        Logger::info("TensorRT inference initialized successfully");
-    } else {
-        Logger::warn("TensorRT inference initialization failed - running in preview-only mode");
-    }
-#else
-    Logger::info("TensorRT not available - running in preview-only mode");
-#endif
+    // Note: TensorRT initialization moved to initInference()
+    // Called lazily to not block startup
 
     // MJPEG Server for debug preview
     _mjpegServer = std::make_unique<net::MjpegServer>(8080);
@@ -105,6 +88,42 @@ bool ProcessingLoop::isRunning() const {
 }
 
 void ProcessingLoop::loop() {
+    // Lazy TensorRT initialization (doesn't block startup)
+#ifdef ENABLE_TENSORRT
+    if (!_inferenceInitialized && !_inferenceAttempted) {
+        _inferenceAttempted = true;
+        Logger::info("Initializing TensorRT inference (lazy)...");
+
+        _palmDetector = std::make_unique<inference::PalmDetector>();
+        _handLandmark = std::make_unique<inference::HandLandmark>();
+
+        inference::PalmDetector::Config palmConfig;
+        palmConfig.modelPath = "models/palm_detection.onnx";
+
+        inference::HandLandmark::Config landmarkConfig;
+        landmarkConfig.modelPath = "models/hand_landmark.onnx";
+
+        // Check if ONNX files exist
+        bool palmExists = std::filesystem::exists(palmConfig.modelPath);
+        bool landmarkExists = std::filesystem::exists(landmarkConfig.modelPath);
+
+        if (!palmExists || !landmarkExists) {
+            Logger::warn("ONNX models not found!");
+            if (!palmExists) Logger::warn("  Missing: ", palmConfig.modelPath);
+            if (!landmarkExists) Logger::warn("  Missing: ", landmarkConfig.modelPath);
+            Logger::warn("Run: python3 scripts/convert_to_onnx.py");
+            Logger::info("Running in preview-only mode");
+        } else {
+            if (_palmDetector->init(palmConfig) && _handLandmark->init(landmarkConfig)) {
+                _inferenceInitialized = true;
+                Logger::info("TensorRT inference initialized successfully");
+            } else {
+                Logger::warn("TensorRT inference initialization failed");
+            }
+        }
+    }
+#endif
+
     while (_running) {
         Frame* frame = nullptr;
         if (_inputQueue->pop_front(frame)) {
