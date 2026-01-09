@@ -121,6 +121,9 @@ add_executable(HandTrackingService src/main.cpp
         src/core/InputLoop.cpp
         src/core/ProcessingLoop.cpp
         src/core/SystemMonitor.cpp
+        src/core/HandTracker.cpp
+        src/core/GestureFSM.cpp
+        src/core/StereoDepth.cpp
         src/math/Filters.cpp
         src/net/OscSender.cpp
         src/net/MjpegServer.cpp
@@ -135,6 +138,9 @@ add_executable(HandTrackingService src/main.cpp
         include/core/InputLoop.hpp
         include/core/ProcessingLoop.hpp
         include/core/SystemMonitor.hpp
+        include/core/HandTracker.hpp
+        include/core/GestureFSM.hpp
+        include/core/StereoDepth.hpp
         include/math/Filters.hpp
         include/net/OscSender.hpp
         include/net/MjpegServer.hpp)

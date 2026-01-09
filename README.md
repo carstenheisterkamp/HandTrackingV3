@@ -18,7 +18,7 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 - ⚠️ **CPU Fallback deaktiviert** (nur GPU NPP - Service crashed bei GPU-Fehler)
 
 **Dokumentation:**
-- [TODO.md](docs/TODO.md) - Projekt-Status & Change Log
+- [TODO.md](docs/TODO_old.md) - Projekt-Status & Change Log
 - [SPECIFICATION.md](docs/SPECIFICATION.md) - Technische Spezifikation
 - [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - OSC Protokoll
 

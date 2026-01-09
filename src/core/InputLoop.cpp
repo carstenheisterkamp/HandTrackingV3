@@ -4,8 +4,8 @@
 #include <chrono>
 #include <algorithm> // for std::fill
 #include <depthai/pipeline/datatype/MessageGroup.hpp>
-#include <depthai/pipeline/datatype/NNData.hpp>
 #include <depthai/pipeline/datatype/ImgFrame.hpp>
+// Note: NNData.hpp removed - NNs run on Jetson per OPTIMAL_WORKFLOW_V2_FINAL.md
 
 namespace core {
 
@@ -40,41 +40,62 @@ void InputLoop::stop() {
 }
 
 void InputLoop::loop() {
-    // Try to get 'sync' queue first, then 'rgb'
+    // Device FPS measurement
+    auto lastDeviceFpsTime = std::chrono::steady_clock::now();
+    int deviceFrameCount = 0;
+
+    // ========================================
+    // V3 SENSOR-ONLY PIPELINE
+    // Per OPTIMAL_WORKFLOW_V3.md:
+    // - OAK-D: RGB + optional Mono L/R synchronized
+    // - All NNs run on Jetson (TensorRT)
+    // ========================================
+
+    // Try sync queue first (stereo enabled), fallback to rgb (stereo disabled)
     auto queue = pipelineMgr_->getOutputQueue("sync");
-    bool isSync = true;
+    bool isSync = (queue != nullptr);
+
     if (!queue) {
         queue = pipelineMgr_->getOutputQueue("rgb");
         isSync = false;
     }
 
     if (!queue) {
-        Logger::error("InputLoop: No suitable queue found (checked 'sync' and 'rgb')!");
+        Logger::error("InputLoop: No queue found (checked 'sync' and 'rgb')!");
+        hasError_ = true;
         return;
     }
 
-    Logger::debug("InputLoop: Waiting for frames from queue: ", queue->getName());
+    Logger::info("═══════════════════════════════════════════════════════════");
+    Logger::info("V3 InputLoop Started");
+    Logger::info("  Queue: ", queue->getName(), " (Sync: ", isSync ? "YES" : "NO", ")");
+    Logger::info("  NNs: Will run on Jetson (TensorRT) - Phase 2");
+    if (isSync) {
+        Logger::info("  Stereo: Will compute on Jetson GPU - Phase 3");
+    } else {
+        Logger::info("  Stereo: DISABLED (RGB-only mode)");
+    }
+    Logger::info("═══════════════════════════════════════════════════════════");
 
     while (running_) {
         try {
             std::shared_ptr<dai::ImgFrame> imgFrame;
-            std::shared_ptr<dai::NNData> landmarkData;
-            std::shared_ptr<dai::NNData> palmData;
             std::shared_ptr<dai::ImgFrame> monoLeftFrame;
             std::shared_ptr<dai::ImgFrame> monoRightFrame;
 
             if (isSync) {
+                // Sync mode: RGB + Mono L/R
                 auto msgGroup = queue->tryGet<dai::MessageGroup>();
                 if (!msgGroup) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                     continue;
                 }
+
                 imgFrame = msgGroup->get<dai::ImgFrame>("rgb");
-                landmarkData = msgGroup->get<dai::NNData>("landmarks");
-                palmData = msgGroup->get<dai::NNData>("palm");
                 monoLeftFrame = msgGroup->get<dai::ImgFrame>("monoLeft");
                 monoRightFrame = msgGroup->get<dai::ImgFrame>("monoRight");
             } else {
+                // RGB-only mode
                 imgFrame = queue->tryGet<dai::ImgFrame>();
                 if (!imgFrame) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -83,46 +104,59 @@ void InputLoop::loop() {
             }
 
             if (!imgFrame) {
-             // Should not happen if queue returned message, but safety check
-             continue;
+                Logger::warn("InputLoop: Missing 'rgb' frame");
+                continue;
+            }
+
+            // DEVICE FPS TRACKING
+            deviceFrameCount++;
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastDeviceFpsTime).count();
+            if (elapsed >= 2000) {
+                float deviceFps = static_cast<float>(deviceFrameCount) * 1000.0f / static_cast<float>(elapsed);
+                Logger::info("📹 DEVICE FPS: ", deviceFps, " (OAK-D ", isSync ? "Synced" : "RGB", " Stream)");
+                if (deviceFps < 25.0f) {
+                    Logger::warn("  ⚠️ Device FPS below target!");
+                } else {
+                    Logger::info("  ✅ Device FPS OK");
+                }
+
+                if (isSync && monoLeftFrame && monoRightFrame) {
+                    Logger::info("  📐 Stereo: L+R active (", monoLeftFrame->getWidth(), "x", monoLeftFrame->getHeight(), ")");
+                }
+
+                deviceFrameCount = 0;
+                lastDeviceFpsTime = now;
             }
 
             // 1. Acquire Frame from Pool
             Frame* frame = framePool_->acquire();
             if (!frame) {
-                // Pool empty (Backpressure) -> Drop frame
                 Logger::warn("InputLoop: FramePool empty, dropping frame seq=", imgFrame->getSequenceNum());
                 continue;
             }
 
-            // 2. Copy Data to Pinned Memory
-            // Verify size
+            // 2. Copy RGB Data to Pinned Memory
             size_t dataSize = imgFrame->getData().size();
 
             static bool typeLogged = false;
             if (!typeLogged) {
-                Logger::info("InputLoop: Received frame type: ", (int)imgFrame->getType(),
+                Logger::info("InputLoop: RGB frame type: ", (int)imgFrame->getType(),
                              " Size: ", imgFrame->getWidth(), "x", imgFrame->getHeight(),
                              " DataSize: ", dataSize);
                 typeLogged = true;
             }
 
             if (dataSize > frame->size) {
-                Logger::error("InputLoop: Frame too large (", dataSize, " > ", frame->size, ")");
+                Logger::error("InputLoop: RGB frame too large (", dataSize, " > ", frame->size, ")");
                 framePool_->release(frame);
                 continue;
             }
 
-            // Copy to pinned buffer (CPU Copy).
-            // This is necessary because OAK-PoE data arrives in non-pinned memory.
-            // The destination 'frame->data' is registered with CUDA, allowing the GPU
-            // to read it directly (Zero-Copy Host->Device).
             std::memcpy(frame->data.get(), imgFrame->getData().data(), dataSize);
-
-            // Remove reference since we own the data now
             frame->daiFrame = nullptr;
 
-            // STEREO DEPTH: Copy Mono L/R frames for GPU processing
+            // 3. Copy Mono L/R for GPU Stereo Depth (if available)
             frame->hasStereoData = false;
             if (monoLeftFrame && monoRightFrame) {
                 size_t monoLeftSize = monoLeftFrame->getData().size();
@@ -135,123 +169,30 @@ void InputLoop::loop() {
                     frame->monoWidth = monoLeftFrame->getWidth();
                     frame->monoHeight = monoLeftFrame->getHeight();
                     frame->hasStereoData = true;
-                } else {
-                    Logger::error("InputLoop: Mono frame too large (", monoLeftSize, " > ", frame->monoSize, ")");
                 }
             }
 
-            // 3. Fill Metadata
+            // 4. Fill Metadata
             frame->width = imgFrame->getWidth();
             frame->height = imgFrame->getHeight();
             frame->type = (int)imgFrame->getType();
             frame->sequenceNum = imgFrame->getSequenceNum();
-            frame->timestamp = std::chrono::steady_clock::now(); // Host arrival
-            frame->captureTimestamp = imgFrame->getTimestamp();  // Glass capture time
+            frame->timestamp = std::chrono::steady_clock::now();
+            frame->captureTimestamp = imgFrame->getTimestamp();
 
-            // 4. Copy NN Data if available
-            if (landmarkData) {
-                try {
-                    // Robust Layer Selection:
-                    // The model outputs 63 floats (21 landmarks * 3) in layer 'Identity_3_dense/BiasAdd/Add'
-                    auto layerNames = landmarkData->getAllLayerNames();
-                    bool found = false;
-
-                    for (const auto& name : layerNames) {
-                        auto tensor = landmarkData->getTensor<float>(name);
-
-                        if (tensor.size() == 63) {
-                            frame->nnData.assign(tensor.begin(), tensor.end());
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (!found) {
-                        // Fallback: Use the first tensor but log a warning with details
-                        if (!layerNames.empty()) {
-                            auto tensor = landmarkData->getFirstTensor<float>();
-                            frame->nnData.assign(tensor.begin(), tensor.end());
-
-                            Logger::warn("InputLoop: NNData size mismatch (Expected 63). Available layers:");
-                            for (const auto& name : layerNames) {
-                                 auto t = landmarkData->getTensor<float>(name);
-                                 Logger::warn(" - Layer '", name, "': size=", t.size());
-                            }
-                        } else {
-                            Logger::warn("InputLoop: No layers in NNData");
-                            frame->nnData.clear();
-                        }
-                    }
-                } catch (const std::exception& e) {
-                    Logger::warn("InputLoop: Failed to get NN data: ", e.what());
-                }
-            } else {
-                frame->nnData.clear();
-            }
-
-            // 4b. Copy Palm Data if available
-            if (palmData) {
-                try {
-                    auto layerNames = palmData->getAllLayerNames();
-                    static bool loggedPalm = false;
-                    if (!loggedPalm) {
-                        Logger::info("Palm Detection Layers:");
-                        for (const auto& name : layerNames) {
-                            auto t = palmData->getTensor<float>(name);
-                            Logger::info(" - Layer '", name, "': size=", t.size());
-                        }
-                        loggedPalm = true;
-                    }
-
-                    if (!layerNames.empty()) {
-                        // TODO: Handle multiple output tensors (Scores + Regressors)
-                        // Currently assuming concatenated or first tensor contains all data
-                        auto tensor = palmData->getTensor<float>(layerNames[0]);
-                        frame->palmData.assign(tensor.begin(), tensor.end());
-                    } else {
-                        frame->palmData.clear();
-                    }
-                } catch (const std::exception& e) {
-                    Logger::warn("InputLoop: Failed to get Palm data: ", e.what());
-                    frame->palmData.clear();
-                }
-            } else {
-                frame->palmData.clear();
-            }
-
-            // 4c. Copy Mono L/R Data for GPU Stereo Depth
-            if (monoLeftFrame && monoRightFrame) {
-                size_t monoSize = monoLeftFrame->getData().size();
-
-                // Allocate mono buffers if needed
-                if (!frame->monoLeftData || frame->monoWidth != monoLeftFrame->getWidth()) {
-                    frame->monoWidth = monoLeftFrame->getWidth();
-                    frame->monoHeight = monoLeftFrame->getHeight();
-                    // Note: monoLeftData/monoRightData should be pre-allocated in FramePool
-                    // For now, we copy into existing buffers if they exist
-                }
-
-                if (frame->monoLeftData && monoSize <= frame->monoWidth * frame->monoHeight) {
-                    std::memcpy(frame->monoLeftData.get(), monoLeftFrame->getData().data(), monoSize);
-                    std::memcpy(frame->monoRightData.get(), monoRightFrame->getData().data(), monoSize);
-                    frame->hasStereoData = true;
-                } else {
-                    frame->hasStereoData = false;
-                }
-            } else {
-                frame->hasStereoData = false;
-            }
+            // V3: No NN data from OAK-D
+            frame->nnData.clear();
+            frame->palmData.clear();
 
             // 5. Push to Processing Queue
             if (!outputQueue_->try_push(frame)) {
-                // Queue full -> Drop and release
                 Logger::warn("InputLoop: OutputQueue full, dropping frame seq=", frame->sequenceNum);
                 framePool_->release(frame);
             }
         } catch (const std::exception& e) {
             Logger::error("InputLoop Critical Error (Connection lost?): ", e.what());
             hasError_ = true;
-            running_ = false; // Stop loop so main can detect and restart
+            running_ = false;
         }
     }
 }

@@ -47,14 +47,17 @@ int main() {
             auto processingQueue = std::make_shared<core::AppProcessingQueue>();
             auto oscQueue = std::make_shared<core::OscQueue>();
 
-            // 2. Configuration
+            // 2. Configuration - V3 Sensor-Only Pipeline
             core::PipelineManager::Config config;
-            config.fps = 30.0f;  // Target 30 FPS
+            config.fps = 30.0f;  // V3: 30 FPS for stable operation
             config.ispScaleNum = 1;
-            config.ispScaleDenom = 3; // 1080p -> 360p (SMALL preview for less bandwidth)
-            config.previewWidth = 640;  // REDUCED from 960
-            config.previewHeight = 360; // REDUCED from 540
-            config.nnPath = "models/hand_landmark_full_sh4.blob";
+            config.ispScaleDenom = 3; // 1080p → 360p
+            config.previewWidth = 640;   // RGB Preview width
+            config.previewHeight = 360;  // RGB Preview height
+            config.monoWidth = 640;      // Mono L/R width (THE_400_P)
+            config.monoHeight = 400;     // Mono L/R height (THE_400_P)
+            config.enableStereo = false; // V3 Phase 1-2: RGB-only (enable in Phase 3)
+            config.nnPath = "";  // V3: NNs disabled on OAK-D, run on Jetson
             config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
 
             // 3. Init & Start Pipeline

@@ -1,13 +1,10 @@
 #include "core/PipelineManager.hpp"
 #include "core/Logger.hpp"
-#include <iostream>
 #include <stdexcept>
 
-// Explicit includes for v3 clarity
+// V3: Sensor-only pipeline - only Camera and Sync nodes
 #include <depthai/pipeline/node/Camera.hpp>
-#include <depthai/pipeline/node/NeuralNetwork.hpp>
 #include <depthai/pipeline/node/Sync.hpp>
-#include <depthai/pipeline/node/ImageManip.hpp>
 
 namespace core {
 
@@ -25,13 +22,23 @@ void PipelineManager::init(const Config& config) {
 
     bool connected = false;
     int retries = 0;
-    const int MAX_RETRIES = 10; // 10 Versuche
-    const int RETRY_DELAY_MS = 3000; // 3 Sekunden Pause
+    const int MAX_RETRIES = 10; // 10 Attempts
+    const int RETRY_DELAY_MS = 5000; // 5 seconds (increased for PoE stability)
 
     while (!connected && retries < MAX_RETRIES) {
         try {
-            // 1. Create Device
-            if (retries > 0) Logger::info("Attempting to connect to OAK device (Attempt ", retries + 1, "/", MAX_RETRIES, ")...");
+            if (retries > 0) {
+                Logger::info("Attempting to connect to OAK device (Attempt ", retries + 1, "/", MAX_RETRIES, ")...");
+
+                // On PoE devices, first retry might fail due to stale ARP cache
+                // Longer delay helps network stack reset
+                if (retries == 1 && !config.deviceIp.empty()) {
+                    Logger::warn("First retry - if this fails repeatedly, consider:");
+                    Logger::warn("  1. sudo arp -d ", config.deviceIp, "  (clear ARP cache)");
+                    Logger::warn("  2. Power cycle the OAK-D (unplug PoE for 10s)");
+                    Logger::warn("  3. Check network: ping ", config.deviceIp);
+                }
+            }
 
             // PoE device connection: Pass IP directly to Device constructor
             if (!config.deviceIp.empty()) {
@@ -39,29 +46,41 @@ void PipelineManager::init(const Config& config) {
                 device_ = std::make_shared<dai::Device>(config.deviceIp);
             } else {
                 // Fallback: Try any available device
+                Logger::info("Connecting to any available device (USB/PoE auto-detect)...");
                 device_ = std::make_shared<dai::Device>();
             }
             connected = true;
+            Logger::info("Successfully connected to device!");
 
         } catch (const std::exception& e) {
             retries++;
-            Logger::warn("Failed to connect to device: ", e.what());
+            Logger::warn("Connection failed: ", e.what());
             if (retries < MAX_RETRIES) {
-                Logger::warn("Retrying in ", RETRY_DELAY_MS, "ms...");
+                Logger::warn("Waiting ", RETRY_DELAY_MS, "ms before retry ", retries + 1, "/", MAX_RETRIES, "...");
                 std::this_thread::sleep_for(std::chrono::milliseconds(RETRY_DELAY_MS));
+            } else {
+                Logger::error("Max retries reached. Connection failed.");
             }
         }
     }
 
     if (!connected) {
-        Logger::error("Fatal error: Could not connect to OAK device after ", MAX_RETRIES, " attempts.");
-        throw std::runtime_error("Device connection failed after retries.");
+        Logger::error("═══════════════════════════════════════════════");
+        Logger::error("FATAL: Could not connect to OAK device!");
+        Logger::error("═══════════════════════════════════════════════");
+        Logger::error("Troubleshooting steps:");
+        Logger::error("  1. Check power: Is OAK-D LED on?");
+        Logger::error("  2. Check network: ping ", config.deviceIp.empty() ? "169.254.1.222" : config.deviceIp);
+        Logger::error("  3. Clear ARP: sudo arp -d ", config.deviceIp.empty() ? "169.254.1.222" : config.deviceIp);
+        Logger::error("  4. Power cycle: Unplug PoE for 10 seconds");
+        Logger::error("  5. Last resort: Reboot Jetson");
+        Logger::error("═══════════════════════════════════════════════");
+        throw std::runtime_error("Device connection failed after " + std::to_string(MAX_RETRIES) + " retries.");
     }
 
     try {
         // 2. Create Pipeline with device
         pipeline_ = std::make_unique<dai::Pipeline>(device_);
-
 
         // 3. Create Nodes and Queues
         createPipeline(config);
@@ -104,87 +123,116 @@ void PipelineManager::createPipeline(const Config& config) {
     Logger::debug("Creating pipeline nodes...");
 
     // ============================================================
-    // STABLE PIPELINE: RGB + Palm Detection + Hand Landmarks
+    // V3 SENSOR-ONLY PIPELINE: RGB + optional Mono L/R
+    // Per OPTIMAL_WORKFLOW_V3.md:
+    // - OAK-D is a pure sensor (no NNs, no encoding, no tracker)
+    // - All NNs run on Jetson (TensorRT)
+    // - Mono L/R preserved for stereo depth on Jetson (optional)
     // ============================================================
 
-    // RGB Camera
-    auto cam = pipeline_->create<dai::node::Camera>()->build(
+    // ─────────────────────────────────────────────────────────────
+    // 1. RGB Camera (Center) - Preview for NN input
+    // ─────────────────────────────────────────────────────────────
+    auto camRgb = pipeline_->create<dai::node::Camera>()->build(
         dai::CameraBoardSocket::CAM_A,
         std::make_pair(1920, 1080),
         config.fps
     );
 
-    // AUTO MODE with Exposure Limit (Phase 0 Optimization)
-    // Limit exposure to guarantee 30+ FPS even in dark rooms
-    cam->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::CONTINUOUS_VIDEO);
-    cam->initialControl.setAutoExposureEnable();
-    cam->initialControl.setAutoExposureLimit(33000); // Max 33ms = 1/30s (guarantees 30 FPS)
-    cam->initialControl.setAutoExposureCompensation(1); // Slightly brighter to compensate
-    cam->initialControl.setAutoWhiteBalanceMode(dai::CameraControl::AutoWhiteBalanceMode::AUTO);
+    // AUTO MODE with Exposure Limit (guarantees FPS target)
+    camRgb->initialControl.setAutoFocusMode(dai::CameraControl::AutoFocusMode::CONTINUOUS_VIDEO);
+    camRgb->initialControl.setAutoExposureEnable();
+    camRgb->initialControl.setAutoExposureLimit(20000); // 20ms exposure limit for 30+ FPS
+    camRgb->initialControl.setAutoExposureCompensation(2);
+    camRgb->initialControl.setAutoWhiteBalanceMode(dai::CameraControl::AutoWhiteBalanceMode::AUTO);
 
-    Logger::info("Camera config: AUTO mode with 33ms Exposure Limit (guarantees 30+ FPS)");
+    Logger::info("RGB Camera: 1080p @ ", config.fps, " FPS (Exposure Limit: 20ms)");
 
-    // Preview output for visualization
-    auto rgbOutput = cam->requestOutput(
+    // RGB Preview: 640×360 NV12 (Zero-Copy friendly, LETTERBOX for NN)
+    auto rgbPreview = camRgb->requestOutput(
         std::make_pair(config.previewWidth, config.previewHeight),
         dai::ImgFrame::Type::NV12,
-        dai::ImgResizeMode::CROP,
+        dai::ImgResizeMode::LETTERBOX,
         config.fps
     );
 
-    if (!config.nnPath.empty()) {
-        Logger::info("Creating Hand Tracking Pipeline (Palm + Landmarks)...");
+    Logger::info("RGB Preview: ", config.previewWidth, "x", config.previewHeight, " NV12 LETTERBOX");
 
-        // 1. Palm Detection Node (using FULL sh4 blob)
-        auto palmDetect = pipeline_->create<dai::node::NeuralNetwork>();
-        palmDetect->setBlobPath("models/palm_detection_full_sh4.blob");
-        palmDetect->setNumInferenceThreads(1);  // REDUCED: 1 thread is faster on Myriad X
-        palmDetect->setNumNCEPerInferenceThread(1);
+    if (config.enableStereo) {
+        // ─────────────────────────────────────────────────────────────
+        // 2. Mono Left Camera (for Stereo Depth) - OPTIONAL
+        // ─────────────────────────────────────────────────────────────
+        auto camMonoLeft = pipeline_->create<dai::node::Camera>()->build(
+            dai::CameraBoardSocket::CAM_B,
+            std::make_pair(640, 400),
+            config.fps
+        );
+        camMonoLeft->initialControl.setAutoExposureEnable();
+        camMonoLeft->initialControl.setAutoExposureLimit(20000);
 
-        // Explicit ImageManip for Palm Detection (192x192 RGB Planar)
-        auto manipPalm = pipeline_->create<dai::node::ImageManip>();
-        manipPalm->initialConfig->setOutputSize(192, 192);
-        manipPalm->initialConfig->base.resizeMode = dai::ImageManipConfig::ResizeMode::LETTERBOX;
-        manipPalm->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
+        auto monoLeftOutput = camMonoLeft->requestOutput(
+            std::make_pair(640, 400),
+            dai::ImgFrame::Type::GRAY8,
+            dai::ImgResizeMode::CROP,
+            config.fps
+        );
 
-        // Link Camera Preview (RGB Output) -> Manip -> NN
-        rgbOutput->link(manipPalm->inputImage);
-        manipPalm->out.link(palmDetect->input);
+        // ─────────────────────────────────────────────────────────────
+        // 3. Mono Right Camera (for Stereo Depth) - OPTIONAL
+        // ─────────────────────────────────────────────────────────────
+        auto camMonoRight = pipeline_->create<dai::node::Camera>()->build(
+            dai::CameraBoardSocket::CAM_C,
+            std::make_pair(640, 400),
+            config.fps
+        );
+        camMonoRight->initialControl.setAutoExposureEnable();
+        camMonoRight->initialControl.setAutoExposureLimit(20000);
 
-        // 2. Landmark Node (using sh4 blob) - DIRECT FEED, NO SCRIPT
-        auto landmarkNN = pipeline_->create<dai::node::NeuralNetwork>();
-        landmarkNN->setBlobPath("models/hand_landmark_full_sh4.blob");
-        landmarkNN->setNumInferenceThreads(1);  // REDUCED: 1 thread is faster
-        landmarkNN->setNumNCEPerInferenceThread(1);
+        auto monoRightOutput = camMonoRight->requestOutput(
+            std::make_pair(640, 400),
+            dai::ImgFrame::Type::GRAY8,
+            dai::ImgResizeMode::CROP,
+            config.fps
+        );
 
-        // Direct ImageManip for Landmark (224x224 from full RGB)
-        auto manipLandmark = pipeline_->create<dai::node::ImageManip>();
-        manipLandmark->initialConfig->setOutputSize(224, 224);
-        manipLandmark->initialConfig->base.resizeMode = dai::ImageManipConfig::ResizeMode::LETTERBOX;
-        manipLandmark->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
+        Logger::info("Mono L/R: 640x400 GRAY8 @ ", config.fps, " FPS");
 
-        // Direct wiring: Camera -> Manip -> Landmark NN
-        rgbOutput->link(manipLandmark->inputImage);
-        manipLandmark->out.link(landmarkNN->input);
-
-        // Sync node: RGB + Palm + Landmarks
+        // ─────────────────────────────────────────────────────────────
+        // 4. Sync Node - Synchronize all three streams
+        // ─────────────────────────────────────────────────────────────
         auto sync = pipeline_->create<dai::node::Sync>();
-        sync->setSyncThreshold(std::chrono::milliseconds(10));  // REDUCED from 20ms
+        sync->setSyncThreshold(std::chrono::milliseconds(33));
 
-        rgbOutput->link(sync->inputs["rgb"]);
-        palmDetect->out.link(sync->inputs["palm"]);
-        landmarkNN->out.link(sync->inputs["landmarks"]);
+        rgbPreview->link(sync->inputs["rgb"]);
+        monoLeftOutput->link(sync->inputs["monoLeft"]);
+        monoRightOutput->link(sync->inputs["monoRight"]);
 
-        // Create queue immediately (v3 API allows this before start())
-        auto syncQueue = sync->out.createOutputQueue(4, false);
+        auto syncQueue = sync->out.createOutputQueue(8, false);
         queues_["sync"] = syncQueue;
 
-        Logger::info("Pipeline: RGB + Palm + Landmarks + Stereo (Mono L/R)");
+        Logger::info("Sync Node: 33ms threshold (RGB + Mono L/R)");
+
     } else {
-        // Fallback: RGB only (no NN)
-        auto rgbQueue = rgbOutput->createOutputQueue();
+        // ─────────────────────────────────────────────────────────────
+        // RGB-ONLY MODE (Phase 1-2, no stereo)
+        // ─────────────────────────────────────────────────────────────
+        auto rgbQueue = rgbPreview->createOutputQueue(8, false);
         queues_["rgb"] = rgbQueue;
+
+        Logger::info("RGB-Only Mode: No Stereo (enable with config.enableStereo)");
     }
+
+    Logger::info("═══════════════════════════════════════════════════════════");
+    Logger::info("V3 SENSOR-ONLY PIPELINE CREATED");
+    Logger::info("  RGB:        ", config.previewWidth, "x", config.previewHeight, " NV12 @ ", config.fps, " FPS");
+    if (config.enableStereo) {
+        Logger::info("  Mono L/R:   640x400 GRAY8 @ ", config.fps, " FPS");
+        Logger::info("  Sync:       33ms threshold");
+    } else {
+        Logger::info("  Stereo:     DISABLED (Phase 1-2)");
+    }
+    Logger::info("  NNs:        DISABLED (will run on Jetson via TensorRT)");
+    Logger::info("═══════════════════════════════════════════════════════════");
 
     Logger::debug("Pipeline creation complete.");
 }
@@ -200,48 +248,49 @@ void PipelineManager::start() {
 
 void PipelineManager::stop() {
     if (device_) {
-        Logger::info("Stopping pipeline and closing device...");
+        Logger::info("Stopping pipeline and closing device (PoE reconnect fix)...");
          try {
-            // 1. Clear queues first to stop data flow
-            queues_.clear();
-            Logger::debug("Queues cleared.");
-
-            // 2. Request device reset before closing (helps with PoE reconnect)
-            if (!device_->isClosed()) {
-                try {
-                    // Send reset command to device firmware
-                    // This ensures clean state for next connection
-                    Logger::debug("Requesting device reset...");
-                    // Note: In DepthAI v3, close() already handles graceful shutdown
-                    // Explicit reset via bootloader would be: device->flashBootloader(...)
-                    // but that's too aggressive for normal operation
-                } catch (const std::exception& resetErr) {
-                    Logger::warn("Device reset command failed (not critical): ", resetErr.what());
-                }
-
-                // 3. Close device connection
-                device_->close();
-                Logger::debug("Device closed.");
+            // 1. Stop pipeline first (releases resources on device)
+            if (pipeline_) {
+                Logger::debug("Stopping pipeline...");
+                // Pipeline destructor will handle cleanup
+                pipeline_.reset();
             }
 
-            // 4. Reset shared pointers (order matters: pipeline before device)
-            pipeline_.reset();
+            // 2. Clear queues (releases XLink buffers)
+            Logger::debug("Clearing queues...");
+            queues_.clear();
+
+            // 3. Close device connection (XLink cleanup)
+            if (!device_->isClosed()) {
+                Logger::debug("Closing device connection...");
+                device_->close();
+                Logger::debug("Device connection closed.");
+            }
+
+            // 4. Reset device pointer (releases memory)
+            Logger::debug("Resetting device pointer...");
             device_.reset();
-            Logger::debug("Pointers reset.");
 
-            // 5. Give OAK-D time to fully reset firmware and release PoE resources
-            // PoE devices need more time than USB devices for network stack cleanup
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            // 5. CRITICAL: Wait for PoE network stack to fully reset
+            // PoE devices need more time than USB:
+            // - TCP connection teardown
+            // - ARP cache flush
+            // - Device firmware reset
+            // INCREASED from 2s to 5s to fix reconnect issues
+            Logger::info("Waiting 5 seconds for PoE network stack reset...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 
-            Logger::info("Device closed successfully. Wait 2s before reconnect.");
+            Logger::info("Device shutdown complete. Ready for reconnect.");
         } catch (const std::exception& e) {
             Logger::error("Error during device shutdown: ", e.what());
             // Force reset even on error
-            queues_.clear();
             pipeline_.reset();
+            queues_.clear();
             device_.reset();
-            // Still wait to give device time to recover
-            std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+            // Still wait (full 5s) to give device time to recover
+            Logger::warn("Forcing 5s wait after error...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(5000));
         }
     }
 }

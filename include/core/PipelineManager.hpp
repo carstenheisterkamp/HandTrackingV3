@@ -20,12 +20,15 @@ namespace core {
 class PipelineManager {
 public:
     struct Config {
-        float fps = 30.0f;
+        float fps = 30.0f;  // V3: Target 30 FPS for sync stability
         int ispScaleNum = 1;
         int ispScaleDenom = 3; // 1080p -> 360p (example) or similar scaling
         int previewWidth = 640;
         int previewHeight = 360;
-        std::string nnPath; // Path to the neural network blob
+        int monoWidth = 640;   // V3: Mono camera width (THE_400_P)
+        int monoHeight = 400;  // V3: Mono camera height (THE_400_P)
+        bool enableStereo = false;  // V3: Enable Mono L/R for stereo depth (Phase 3+)
+        std::string nnPath; // Path to the neural network blob (unused in V3, NNs on Jetson)
         std::string deviceIp; // IP address for PoE devices (e.g., "169.254.1.222")
         // Note: manualFocus removed - v3 API requires CameraControl Messages, not compile-time config
     };

@@ -2,5 +2,13 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-build/vcpkg" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/3rdparty/foxglove/ws-protocol" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/3rdparty/xtensor" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/3rdparty/xtl" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/bindings/python/external/pybind11_opencv_numpy" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/bindings/python/external/xtensor-python" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/cmake-build-debug/_deps/depthai-src/shared/depthai-bootloader-shared" vcs="Git" />
   </component>
 </project>
