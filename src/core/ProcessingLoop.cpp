@@ -88,39 +88,51 @@ bool ProcessingLoop::isRunning() const {
 }
 
 void ProcessingLoop::loop() {
-    // Lazy TensorRT initialization (doesn't block startup)
+    // Lazy TensorRT initialization in BACKGROUND thread (doesn't block frame processing)
 #ifdef ENABLE_TENSORRT
     if (!_inferenceInitialized && !_inferenceAttempted) {
         _inferenceAttempted = true;
-        Logger::info("Initializing TensorRT inference (lazy)...");
 
-        _palmDetector = std::make_unique<inference::PalmDetector>();
-        _handLandmark = std::make_unique<inference::HandLandmark>();
+        // Start TRT init in background thread
+        _trtInitThread = std::thread([this]() {
+            Logger::info("Initializing TensorRT inference (background thread)...");
 
-        inference::PalmDetector::Config palmConfig;
-        palmConfig.modelPath = "models/palm_detection.onnx";
+            auto palmDetector = std::make_unique<inference::PalmDetector>();
+            auto handLandmark = std::make_unique<inference::HandLandmark>();
 
-        inference::HandLandmark::Config landmarkConfig;
-        landmarkConfig.modelPath = "models/hand_landmark.onnx";
+            inference::PalmDetector::Config palmConfig;
+            palmConfig.modelPath = "models/palm_detection.onnx";
 
-        // Check if ONNX files exist
-        bool palmExists = std::filesystem::exists(palmConfig.modelPath);
-        bool landmarkExists = std::filesystem::exists(landmarkConfig.modelPath);
+            inference::HandLandmark::Config landmarkConfig;
+            landmarkConfig.modelPath = "models/hand_landmark.onnx";
 
-        if (!palmExists || !landmarkExists) {
-            Logger::warn("ONNX models not found!");
-            if (!palmExists) Logger::warn("  Missing: ", palmConfig.modelPath);
-            if (!landmarkExists) Logger::warn("  Missing: ", landmarkConfig.modelPath);
-            Logger::warn("Run: python3 scripts/convert_to_onnx.py");
-            Logger::info("Running in preview-only mode");
-        } else {
-            if (_palmDetector->init(palmConfig) && _handLandmark->init(landmarkConfig)) {
+            // Check if ONNX files exist
+            bool palmExists = std::filesystem::exists(palmConfig.modelPath);
+            bool landmarkExists = std::filesystem::exists(landmarkConfig.modelPath);
+
+            if (!palmExists || !landmarkExists) {
+                Logger::warn("ONNX models not found!");
+                if (!palmExists) Logger::warn("  Missing: ", palmConfig.modelPath);
+                if (!landmarkExists) Logger::warn("  Missing: ", landmarkConfig.modelPath);
+                Logger::warn("Run: python3 scripts/convert_to_onnx.py");
+                Logger::info("Running in preview-only mode");
+                return;
+            }
+
+            bool palmOk = palmDetector->init(palmConfig);
+            bool landmarkOk = landmarkOk ? handLandmark->init(landmarkConfig) : false;
+
+            if (palmOk && landmarkOk) {
+                // Transfer ownership to class members (thread-safe)
+                std::lock_guard<std::mutex> lock(_trtMutex);
+                _palmDetector = std::move(palmDetector);
+                _handLandmark = std::move(handLandmark);
                 _inferenceInitialized = true;
-                Logger::info("TensorRT inference initialized successfully");
+                Logger::info("TensorRT inference initialized successfully (background)");
             } else {
                 Logger::warn("TensorRT inference initialization failed");
             }
-        }
+        });
     }
 #endif
 

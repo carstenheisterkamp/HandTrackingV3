@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <thread>
+#include <mutex>
 #include <memory>
 #include <vector>
 #include <opencv2/opencv.hpp>
@@ -70,6 +71,8 @@ private:
     std::unique_ptr<inference::HandLandmark> _handLandmark;
     bool _inferenceInitialized = false;
     bool _inferenceAttempted = false;
+    std::thread _trtInitThread;
+    std::mutex _trtMutex;
 
     // Debug Preview
     std::unique_ptr<net::MjpegServer> _mjpegServer;
