@@ -108,7 +108,10 @@ bool TensorRTEngine::load(const Config& config) {
     } else {
         core::Logger::info("  Input: ", inputInfo_.name, " size=", inputInfo_.size);
     }
-    core::Logger::info("  Output: ", outputInfo_.name, " size=", outputInfo_.size);
+
+    for (const auto& out : outputInfos_) {
+        core::Logger::info("  Output: ", out.name, " size=", out.size);
+    }
 
     return true;
 }
@@ -242,9 +245,11 @@ void TensorRTEngine::extractTensorInfo() {
         return;
     }
 
-    // TensorRT 8.5+ API uses getNbIOTensors instead of getNbBindings
+    // TensorRT 10.x API uses getNbIOTensors instead of getNbBindings
     int numTensors = engine_->getNbIOTensors();
     core::Logger::info("TensorRT engine has ", numTensors, " IO tensors");
+
+    outputInfos_.clear();
 
     for (int i = 0; i < numTensors; ++i) {
         const char* name = engine_->getIOTensorName(i);
@@ -262,41 +267,60 @@ void TensorRTEngine::extractTensorInfo() {
         info.isInput = isInput;
         info.size = 1;
 
-        core::Logger::info("  Tensor ", i, ": ", name, " (", isInput ? "INPUT" : "OUTPUT", ") dims=[");
+        std::string dimStr = "";
         for (int d = 0; d < dims.nbDims; ++d) {
             info.dims.push_back(dims.d[d]);
             if (dims.d[d] > 0) {
                 info.size *= dims.d[d];
             }
+            dimStr += std::to_string(dims.d[d]);
+            if (d < dims.nbDims - 1) dimStr += "x";
         }
-        core::Logger::info("    ] size=", info.size);
+
+        core::Logger::info("  Tensor ", i, ": ", name, " (", isInput ? "INPUT" : "OUTPUT",
+                          ") dims=[", dimStr, "] size=", info.size);
 
         if (isInput) {
             inputInfo_ = info;
         } else {
-            outputInfo_ = info;
+            outputInfos_.push_back(info);
         }
     }
+
+    core::Logger::info("Found ", outputInfos_.size(), " output tensors");
 }
 
 void TensorRTEngine::allocateBuffers() {
-    if (inputInfo_.size == 0 || outputInfo_.size == 0) {
+    if (inputInfo_.size == 0 || outputInfos_.empty()) {
         core::Logger::error("Cannot allocate buffers: input or output size is 0");
         return;
     }
 
+    // Allocate input buffer
     size_t inputBytes = inputInfo_.size * sizeof(float);
-    size_t outputBytes = outputInfo_.size * sizeof(float);
-
-    cudaError_t err1 = cudaMalloc(&d_input_, inputBytes);
-    cudaError_t err2 = cudaMalloc(&d_output_, outputBytes);
-
-    if (err1 != cudaSuccess || err2 != cudaSuccess) {
-        core::Logger::error("CUDA malloc failed: ", cudaGetErrorString(err1), " / ", cudaGetErrorString(err2));
+    cudaError_t err = cudaMalloc(&d_input_, inputBytes);
+    if (err != cudaSuccess) {
+        core::Logger::error("CUDA malloc input failed: ", cudaGetErrorString(err));
         return;
     }
 
-    core::Logger::info("CUDA buffers allocated: input=", inputBytes, " output=", outputBytes);
+    // Allocate output buffers for ALL outputs
+    d_outputs_.clear();
+    size_t totalOutputBytes = 0;
+    for (const auto& outInfo : outputInfos_) {
+        void* d_out = nullptr;
+        size_t outBytes = outInfo.size * sizeof(float);
+        err = cudaMalloc(&d_out, outBytes);
+        if (err != cudaSuccess) {
+            core::Logger::error("CUDA malloc output '", outInfo.name, "' failed: ", cudaGetErrorString(err));
+            return;
+        }
+        d_outputs_.push_back(d_out);
+        totalOutputBytes += outBytes;
+    }
+
+    core::Logger::info("CUDA buffers allocated: input=", inputBytes, " outputs=", totalOutputBytes,
+                       " (", outputInfos_.size(), " tensors)");
 }
 
 void TensorRTEngine::freeBuffers() {
@@ -304,10 +328,12 @@ void TensorRTEngine::freeBuffers() {
         cudaFree(d_input_);
         d_input_ = nullptr;
     }
-    if (d_output_) {
-        cudaFree(d_output_);
-        d_output_ = nullptr;
+    for (void* d_out : d_outputs_) {
+        if (d_out) {
+            cudaFree(d_out);
+        }
     }
+    d_outputs_.clear();
 }
 
 bool TensorRTEngine::infer(const void* inputData, void* outputData) {
@@ -329,14 +355,18 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         return false;
     }
 
-    // TensorRT 8.5+: Set tensor addresses
+    // TensorRT 10.x: Set ALL tensor addresses (input + ALL outputs)
     if (!context_->setTensorAddress(inputInfo_.name.c_str(), d_input_)) {
-        core::Logger::error("Failed to set input tensor address");
+        core::Logger::error("Failed to set input tensor address: ", inputInfo_.name);
         return false;
     }
-    if (!context_->setTensorAddress(outputInfo_.name.c_str(), d_output_)) {
-        core::Logger::error("Failed to set output tensor address");
-        return false;
+
+    // Set ALL output tensor addresses
+    for (size_t i = 0; i < outputInfos_.size(); ++i) {
+        if (!context_->setTensorAddress(outputInfos_[i].name.c_str(), d_outputs_[i])) {
+            core::Logger::error("Failed to set output tensor address: ", outputInfos_[i].name);
+            return false;
+        }
     }
 
     // Run inference (async on default stream)
@@ -350,12 +380,14 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
     // CRITICAL: Synchronize before copying output (enqueueV3 is async!)
     cudaStreamSynchronize(nullptr);
 
-    // Copy output to host
-    size_t outputBytes = outputInfo_.size * sizeof(float);
-    err = cudaMemcpy(outputData, d_output_, outputBytes, cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        core::Logger::error("CUDA memcpy output failed: ", cudaGetErrorString(err));
-        return false;
+    // Copy FIRST output to host (for backwards compatibility)
+    if (!outputInfos_.empty() && d_outputs_.size() > 0) {
+        size_t outputBytes = outputInfos_[0].size * sizeof(float);
+        err = cudaMemcpy(outputData, d_outputs_[0], outputBytes, cudaMemcpyDeviceToHost);
+        if (err != cudaSuccess) {
+            core::Logger::error("CUDA memcpy output failed: ", cudaGetErrorString(err));
+            return false;
+        }
     }
 
     return true;
@@ -368,11 +400,13 @@ bool TensorRTEngine::inferAsync(void** bindings, void* stream) {
 
     cudaStream_t cudaStream = stream ? static_cast<cudaStream_t>(stream) : nullptr;
 
-    // TensorRT 8.5+: Use setTensorAddress + enqueueV3
-    // Set input tensor address
+    // TensorRT 10.x: Set ALL tensor addresses
     context_->setTensorAddress(inputInfo_.name.c_str(), bindings[0]);
-    // Set output tensor address
-    context_->setTensorAddress(outputInfo_.name.c_str(), bindings[1]);
+
+    // Set ALL output tensor addresses
+    for (size_t i = 0; i < outputInfos_.size(); ++i) {
+        context_->setTensorAddress(outputInfos_[i].name.c_str(), bindings[i + 1]);
+    }
 
     return context_->enqueueV3(cudaStream);
 }

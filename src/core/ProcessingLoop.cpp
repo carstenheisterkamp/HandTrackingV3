@@ -80,6 +80,10 @@ void ProcessingLoop::stop() {
     if (_thread.joinable()) {
         _thread.join();
     }
+    // Wait for TRT init thread if still running
+    if (_trtInitThread.joinable()) {
+        _trtInitThread.join();
+    }
     Logger::info("ProcessingLoop stopped.");
 }
 
@@ -120,7 +124,7 @@ void ProcessingLoop::loop() {
             }
 
             bool palmOk = palmDetector->init(palmConfig);
-            bool landmarkOk = landmarkOk ? handLandmark->init(landmarkConfig) : false;
+            bool landmarkOk = palmOk ? handLandmark->init(landmarkConfig) : false;
 
             if (palmOk && landmarkOk) {
                 // Transfer ownership to class members (thread-safe)
@@ -230,7 +234,14 @@ void ProcessingLoop::processFrame(Frame* frame) {
     // ═══════════════════════════════════════════════════════════
 
 #ifdef ENABLE_TENSORRT
-    if (_inferenceInitialized) {
+    // Thread-safe check: TRT may still be initializing in background
+    bool canInfer = false;
+    {
+        std::lock_guard<std::mutex> lock(_trtMutex);
+        canInfer = _inferenceInitialized && _palmDetector && _handLandmark;
+    }
+
+    if (canInfer) {
         // Palm Detection
         auto palmDetection = _palmDetector->detect(
             frame->data.get(),

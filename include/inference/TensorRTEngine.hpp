@@ -71,9 +71,19 @@ public:
     [[nodiscard]] const TensorInfo& getInputInfo() const { return inputInfo_; }
 
     /**
-     * Get output tensor info
+     * Get output tensor info (first/primary output for backwards compat)
      */
-    [[nodiscard]] const TensorInfo& getOutputInfo() const { return outputInfo_; }
+    [[nodiscard]] const TensorInfo& getOutputInfo() const { return outputInfos_.empty() ? inputInfo_ : outputInfos_[0]; }
+
+    /**
+     * Get all output tensor infos
+     */
+    [[nodiscard]] const std::vector<TensorInfo>& getOutputInfos() const { return outputInfos_; }
+
+    /**
+     * Get number of output tensors
+     */
+    [[nodiscard]] size_t getNumOutputs() const { return outputInfos_.size(); }
 
     /**
      * Check if engine is loaded
@@ -94,13 +104,13 @@ private:
     nvinfer1::ICudaEngine* engine_ = nullptr;
     nvinfer1::IExecutionContext* context_ = nullptr;
 
-    // Tensor info
+    // Tensor info - supports multiple outputs
     TensorInfo inputInfo_;
-    TensorInfo outputInfo_;
+    std::vector<TensorInfo> outputInfos_;
 
-    // CUDA buffers
+    // CUDA buffers - supports multiple outputs
     void* d_input_ = nullptr;
-    void* d_output_ = nullptr;
+    std::vector<void*> d_outputs_;
 
     // Helper methods
     bool loadEngine(const std::string& enginePath);
