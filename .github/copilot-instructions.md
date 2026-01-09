@@ -108,13 +108,13 @@ Keep this short reference at hand — it captures the device features and the en
 
 ---
 
-## 🤖 TensorRT 8.5+ API (Jetson Orin)
+## 🤖 TensorRT 10.x API (Jetson Orin - JetPack 6)
 
-**CRITICAL:** The Jetson Orin runs TensorRT 8.5+. Many old TensorRT APIs are deprecated or removed. Always use the new APIs:
+**CRITICAL:** The Jetson Orin runs **TensorRT 10.3+** (JetPack 6). The old binding-based APIs are **completely removed** in TensorRT 10.x. Always use the new tensor-based APIs:
 
-### Deprecated → New API Mapping
+### Removed → New API Mapping (TensorRT 10.x)
 
-| ❌ Old (Deprecated) | ✅ New (TensorRT 8.5+) |
+| ❌ Removed (TRT <10) | ✅ Required (TensorRT 10.x) |
 |---------------------|------------------------|
 | `createNetworkV2(kEXPLICIT_BATCH)` | `createNetworkV2(0)` - explicit batch is now default |
 | `engine->getNbBindings()` | `engine->getNbIOTensors()` |
@@ -124,17 +124,17 @@ Keep this short reference at hand — it captures the device features and the en
 | `context->executeV2(bindings)` | `context->setTensorAddress(name, ptr)` + `context->enqueueV3(stream)` |
 | `context->enqueueV2(bindings, stream, events)` | `context->setTensorAddress(name, ptr)` + `context->enqueueV3(stream)` |
 
-### Inference Pattern (TensorRT 8.5+)
+### Inference Pattern (TensorRT 10.x)
 
 ```cpp
-// ✅ CORRECT: TensorRT 8.5+ inference
+// ✅ CORRECT: TensorRT 10.x inference
 context_->setTensorAddress(inputInfo_.name.c_str(), d_input_);
 context_->setTensorAddress(outputInfo_.name.c_str(), d_output_);
 bool success = context_->enqueueV3(cudaStream);
 cudaStreamSynchronize(cudaStream);  // CRITICAL: enqueueV3 is async!
 ```
 
-### Common Pitfalls
+### Common Pitfalls (TensorRT 10.x)
 
 1. **Missing Stream Sync:** `enqueueV3()` is async - always call `cudaStreamSynchronize()` before reading output
 2. **Wrong Tensor Names:** Use exact names from ONNX model, not positional indices
