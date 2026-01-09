@@ -42,44 +42,43 @@ Zum ersten Mal haben wir:
 
 **Ergebnis:** 2 Hände werden erkannt und gut getrackt! ✅
 
-### Phase 2.7: Gesten-Erkennung Fix - 🔄 IN PROGRESS
-**Problem:** Immer nur "FIVE" angezeigt (nicht "PALM" - das gibt es nicht mehr)
+### Phase 2.7: Gesten-Erkennung Fix - 🔄 MAJOR REWRITE
+**Problem:** Winkelabhängige Fehlerkennungen (FIST↔THUMBS_UP, POINTING↔TWO/THREE, etc.)
 
 **Ursache identifiziert:**
-- Ohne Z-Koordinaten kann 2D-Distanz nicht zwischen "Finger zeigt zur Kamera" und "gebogen" unterscheiden
-- Die Thresholds waren "magische Zahlen" ohne Kalibrierung
+- 2D-Winkelberechnung scheitert bei Fingern, die zur Kamera zeigen
+- Boolean-Logik (extended/not) ist zu binär für ambige Fälle
+- Keine Hysterese zwischen "extended" und "curled"
 
-**Was gefixt wurde (2026-01-09):**
-- ✅ `isFingerExtended()` komplett neu mit Standard-Heuristiken:
-  - **Winkelberechnung** am PIP-Gelenk (>140° = gestreckt)
-  - **Distanz-Check** (Tip weiter von Wrist als PIP)
-  - **Längen-Check** (Tip weiter von MCP als PIP)
-  - **Voting-System:** 2 von 3 Methoden müssen zustimmen
-- ✅ `isThumbExtended()` verbessert:
-  - Spread-Check (Abstand zu Index MCP)
-  - Extension-Check (Abstand zu Wrist)
-  - Winkel am IP-Gelenk
-  - Voting: 2 von 3
+**Komplett neuer Ansatz (2026-01-09):**
+- ✅ **Curl-Faktor statt Boolean**: `getFingerCurl()` gibt 0.0-1.0 zurück
+  - 0.0 = voll gestreckt
+  - 1.0 = voll gekrümmt
+  - Nutzt 3 Metriken: Projektion, Distanz-Ratio, Tip-Position
+- ✅ **Richtungsbewusste Projektion**: Projiziert Finger auf Hand-Richtung
+- ✅ **Hysterese-Thresholds**: 
+  - Extended: curl < 0.4
+  - Curled: curl > 0.6
+  - Dazwischen: Ambig, behält vorherigen State
+- ✅ **Robuste Daumen-Erkennung**: `getThumbCurl()` mit Spread+Extension+Wrist Metriken
+- ✅ **Fallback für ambige Fälle**: Behält aktuellen State statt zu raten
 
-**Nächster Schritt:** Build & Test ob Gesten jetzt korrekt erkannt werden
+**Nächster Schritt:** Build & Test der neuen Curl-basierten Erkennung
 
-### Phase 2.8: False Positive Filter - 🔄 VERBESSERT
-**Problem:** Gesicht wird als Hand erkannt (nur ohne Hände im Bild)
+### Phase 2.8: False Positive Filter - 🔄 VERSTÄRKT
+**Problem:** Gesicht wird als Hand erkannt (Nase/Mund-Bereich)
 
-**Ursache identifiziert:**
-- `scoreThreshold = 0.3f` war viel zu niedrig!
-- MediaPipe ist auf Hautfarbe trainiert → Gesicht = ähnliche Farbe
-- Keypoint-Konsistenz wurde nicht geprüft
+**Ursache:** 
+- MediaPipe trainiert auf Hautfarbe → Gesicht = ähnliche Farbe
+- Score-Threshold 0.6 noch zu niedrig
 
-**Was gefixt wurde (2026-01-09):**
-- ✅ Score-Threshold auf **0.6** erhöht (von 0.3)
-- ✅ NMS-Threshold auf **0.4** erhöht (von 0.3)
-- ✅ **Keypoint-Konsistenz-Filter** hinzugefügt:
-  - Prüft Abstand Wrist↔Middle-Base
-  - Echte Hände: 15-150% der Palm-Breite
-  - Gesichter: Keypoints sind zufällig/geclustert
+**Verstärkte Filter (2026-01-09):**
+- ✅ Score-Threshold auf **0.75** erhöht
+- ✅ Face-Zone auf **obere 40%** erweitert (war 25%)
+- ✅ In Face-Zone: Nur Score > 0.85 akzeptiert
+- ✅ Keypoint-Konsistenz-Filter aktiv
 
-**Nächster Schritt:** Build & Test ob Gesichter jetzt gefiltert werden
+**Nächster Schritt:** Test ob Gesichts-False-Positives eliminiert sind
 
 
 ### Phase 2.1: TensorRT Engine Wrapper

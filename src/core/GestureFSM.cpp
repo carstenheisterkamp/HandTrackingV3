@@ -44,7 +44,8 @@ float GestureFSM::getConfidence() const {
     return static_cast<float>(frameCount_) / static_cast<float>(GESTURE_DEBOUNCE_FRAMES);
 }
 
-GestureState GestureFSM::update(const std::vector<TrackingResult::NormalizedPoint>& landmarks) {
+GestureState GestureFSM::update(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                 bool isRightHand) {
     if (landmarks.size() < 21) {
         handleHandLost();
         return state_;
@@ -53,7 +54,7 @@ GestureState GestureFSM::update(const std::vector<TrackingResult::NormalizedPoin
     handLostFrames_ = 0;  // Reset hand lost counter
 
     // Detect current gesture from landmarks
-    GestureState detected = detectGesture(landmarks);
+    GestureState detected = detectGesture(landmarks, isRightHand);
 
     // Debounce logic
     if (detected == pendingState_) {
@@ -93,7 +94,8 @@ void GestureFSM::transitionTo(GestureState newState) {
     }
 }
 
-GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
+GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                        bool isRightHand) const {
     float handSize = getHandSize(landmarks);
     if (handSize < 0.001f) return GestureState::Idle;  // Invalid landmarks
 
@@ -104,7 +106,7 @@ GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::Normali
     if (state_ == GestureState::Pinch) {
         // Already pinching: use exit threshold (higher)
         if (normalizedPinch > PINCH_THRESHOLD_EXIT) {
-            return detectOpenHand(landmarks);
+            return detectOpenHand(landmarks, isRightHand);
         }
         return GestureState::Pinch;
     } else {
@@ -112,113 +114,109 @@ GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::Normali
         if (normalizedPinch < PINCH_THRESHOLD_ENTER) {
             return GestureState::Pinch;
         }
-        return detectOpenHand(landmarks);
+        return detectOpenHand(landmarks, isRightHand);
     }
 }
 
-GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
+GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                         bool isRightHand) const {
     using LI = LandmarkIndices;
 
-    // Get curl values for all 5 fingers (0.0 = extended, 1.0 = curled)
-    float thumbCurl = getThumbCurl(landmarks);
-    float indexCurl = getFingerCurl(landmarks, LI::INDEX_MCP, LI::INDEX_PIP, LI::INDEX_DIP, LI::INDEX_TIP);
-    float middleCurl = getFingerCurl(landmarks, LI::MIDDLE_MCP, LI::MIDDLE_PIP, LI::MIDDLE_DIP, LI::MIDDLE_TIP);
-    float ringCurl = getFingerCurl(landmarks, LI::RING_MCP, LI::RING_PIP, LI::RING_DIP, LI::RING_TIP);
-    float pinkyCurl = getFingerCurl(landmarks, LI::PINKY_MCP, LI::PINKY_PIP, LI::PINKY_DIP, LI::PINKY_TIP);
+    // ═══════════════════════════════════════════════════════════
+    // SIMPLIFIED FINGER DETECTION (based on Python/MediaPipe article)
+    //
+    // Key insight: Use relative Y positions, not complex angles
+    // - Finger is UP if tip.y < pip.y (tip higher than PIP joint)
+    // - Thumb uses X position (depends on left/right hand)
+    //
+    // This is MORE ROBUST because:
+    // 1. Y-comparison works regardless of viewing angle
+    // 2. No complex angle calculations that fail at edge cases
+    // 3. Simple enough to be reliable
+    // ═══════════════════════════════════════════════════════════
 
-    // Convert to extended booleans with hysteresis threshold
-    // Extended: curl < 0.4 (stricter)
-    // Curled: curl > 0.6 (stricter)
-    // In between: keep previous state (handled by debounce)
-    constexpr float EXTENDED_THRESHOLD = 0.4f;
-    constexpr float CURLED_THRESHOLD = 0.6f;
+    // Thumb: X-position based (different for left/right hand)
+    bool thumbUp = isThumbUp(landmarks, isRightHand);
 
-    bool thumbExtended = thumbCurl < EXTENDED_THRESHOLD;
-    bool indexExtended = indexCurl < EXTENDED_THRESHOLD;
-    bool middleExtended = middleCurl < EXTENDED_THRESHOLD;
-    bool ringExtended = ringCurl < EXTENDED_THRESHOLD;
-    bool pinkyExtended = pinkyCurl < EXTENDED_THRESHOLD;
-
-    bool thumbCurled = thumbCurl > CURLED_THRESHOLD;
-    bool indexCurled = indexCurl > CURLED_THRESHOLD;
-    bool middleCurled = middleCurl > CURLED_THRESHOLD;
-    bool ringCurled = ringCurl > CURLED_THRESHOLD;
-    bool pinkyCurled = pinkyCurl > CURLED_THRESHOLD;
+    // Fingers: Y-position based (tip higher than PIP = extended)
+    bool indexUp = isFingerUp(landmarks, LI::INDEX_TIP, LI::INDEX_PIP);
+    bool middleUp = isFingerUp(landmarks, LI::MIDDLE_TIP, LI::MIDDLE_PIP);
+    bool ringUp = isFingerUp(landmarks, LI::RING_TIP, LI::RING_PIP);
+    bool pinkyUp = isFingerUp(landmarks, LI::PINKY_TIP, LI::PINKY_PIP);
 
     // Count extended fingers
-    int extendedCount = (thumbExtended ? 1 : 0) + (indexExtended ? 1 : 0) +
-                        (middleExtended ? 1 : 0) + (ringExtended ? 1 : 0) + (pinkyExtended ? 1 : 0);
+    int fingerCount = (thumbUp ? 1 : 0) + (indexUp ? 1 : 0) +
+                      (middleUp ? 1 : 0) + (ringUp ? 1 : 0) + (pinkyUp ? 1 : 0);
 
     // Debug log (every 60 frames)
     static int debugCounter = 0;
     if (++debugCounter % 60 == 1) {
-        Logger::info("🖐 Gesture Debug: T=", thumbCurl, " I=", indexCurl,
-                     " M=", middleCurl, " R=", ringCurl, " P=", pinkyCurl,
-                     " ext=", extendedCount);
+        Logger::info("🖐 Gesture (Y-based): T=", thumbUp, " I=", indexUp,
+                     " M=", middleUp, " R=", ringUp, " P=", pinkyUp,
+                     " count=", fingerCount, " hand=", (isRightHand ? "R" : "L"));
     }
 
     // ═══════════════════════════════════════════════════════════
     // Gesture Detection (ordered by specificity - most specific first)
-    // Using BOTH extended AND curled checks for robustness
     // ═══════════════════════════════════════════════════════════
 
-    // FIST: All fingers curled ✊
-    if (thumbCurled && indexCurled && middleCurled && ringCurled && pinkyCurled) {
+    // FIST: All fingers down ✊
+    if (!thumbUp && !indexUp && !middleUp && !ringUp && !pinkyUp) {
         return GestureState::Fist;
     }
 
-    // THUMBS_UP: Only thumb extended, all others curled 👍
-    if (thumbExtended && indexCurled && middleCurled && ringCurled && pinkyCurled) {
+    // THUMBS_UP: Only thumb up 👍
+    if (thumbUp && !indexUp && !middleUp && !ringUp && !pinkyUp) {
         return GestureState::ThumbsUp;
     }
 
-    // POINTING: Only index extended ☝️
-    if (thumbCurled && indexExtended && middleCurled && ringCurled && pinkyCurled) {
+    // POINTING: Only index up ☝️
+    if (!thumbUp && indexUp && !middleUp && !ringUp && !pinkyUp) {
         return GestureState::Pointing;
     }
 
-    // MIDDLE_FINGER: Only middle extended 🖕
-    if (thumbCurled && indexCurled && middleExtended && ringCurled && pinkyCurled) {
+    // MIDDLE_FINGER: Only middle up 🖕
+    if (!thumbUp && !indexUp && middleUp && !ringUp && !pinkyUp) {
         return GestureState::MiddleFinger;
     }
 
-    // PEACE: Index + Middle extended, others curled ✌️
-    if (thumbCurled && indexExtended && middleExtended && ringCurled && pinkyCurled) {
+    // PEACE: Index + Middle up ✌️
+    if (!thumbUp && indexUp && middleUp && !ringUp && !pinkyUp) {
         return GestureState::Peace;
     }
 
-    // METAL: Index + Pinky extended, others curled 🤘
-    if (thumbCurled && indexExtended && middleCurled && ringCurled && pinkyExtended) {
+    // METAL: Index + Pinky up 🤘
+    if (!thumbUp && indexUp && !middleUp && !ringUp && pinkyUp) {
         return GestureState::Metal;
     }
 
-    // CALL_ME: Thumb + Pinky extended, middle fingers curled 🤙
-    if (thumbExtended && indexCurled && middleCurled && ringCurled && pinkyExtended) {
+    // CALL_ME: Thumb + Pinky up 🤙
+    if (thumbUp && !indexUp && !middleUp && !ringUp && pinkyUp) {
         return GestureState::CallMe;
     }
 
-    // LOVE_YOU: Thumb + Index + Pinky extended 🤟
-    if (thumbExtended && indexExtended && middleCurled && ringCurled && pinkyExtended) {
+    // LOVE_YOU: Thumb + Index + Pinky up 🤟
+    if (thumbUp && indexUp && !middleUp && !ringUp && pinkyUp) {
         return GestureState::LoveYou;
     }
 
-    // TWO: Thumb + Index extended (V sign with thumb)
-    if (thumbExtended && indexExtended && middleCurled && ringCurled && pinkyCurled) {
+    // TWO: Thumb + Index up
+    if (thumbUp && indexUp && !middleUp && !ringUp && !pinkyUp) {
         return GestureState::Two;
     }
 
-    // THREE: Thumb + Index + Middle extended
-    if (thumbExtended && indexExtended && middleExtended && ringCurled && pinkyCurled) {
+    // THREE: Thumb + Index + Middle up
+    if (thumbUp && indexUp && middleUp && !ringUp && !pinkyUp) {
         return GestureState::Three;
     }
 
-    // FOUR: All except thumb extended
-    if (thumbCurled && indexExtended && middleExtended && ringExtended && pinkyExtended) {
+    // FOUR: All except thumb up
+    if (!thumbUp && indexUp && middleUp && ringUp && pinkyUp) {
         return GestureState::Four;
     }
 
-    // FIVE: All 5 fingers extended 🖐️
-    if (thumbExtended && indexExtended && middleExtended && ringExtended && pinkyExtended) {
+    // FIVE: All 5 fingers up 🖐️
+    if (thumbUp && indexUp && middleUp && ringUp && pinkyUp) {
         // Check for VULCAN (spread between middle and ring)
         if (isVulcanSpread(landmarks)) {
             return GestureState::Vulcan;
@@ -230,19 +228,68 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     // Fallback: Count-based detection for ambiguous cases
     // ═══════════════════════════════════════════════════════════
 
-    if (extendedCount >= 5) return GestureState::Five;
-    if (extendedCount == 4) return GestureState::Four;
-    if (extendedCount == 0) return GestureState::Fist;
+    if (fingerCount >= 5) return GestureState::Five;
+    if (fingerCount == 4) return GestureState::Four;
+    if (fingerCount == 0) return GestureState::Fist;
 
     // Ambiguous - return current state to avoid flicker
     return state_;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SIMPLE Y-BASED FINGER DETECTION (from Python/MediaPipe article)
+// Much more robust than complex angle calculations
+// ═══════════════════════════════════════════════════════════════════════════
+
+bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                             int tipIdx, int pipIdx) const {
+    // Simple check: Tip is HIGHER (smaller Y) than PIP joint
+    // In image coordinates, Y=0 is top, so smaller Y = higher
+    //
+    // This works because:
+    // - When finger is extended, tip is above PIP
+    // - When finger is curled, tip folds down below PIP
+    // - Robust to viewing angle (always uses image Y coordinate)
+
+    const auto& tip = landmarks[tipIdx];
+    const auto& pip = landmarks[pipIdx];
+
+    // Tip must be significantly higher than PIP (with small margin)
+    // Using 0.02 margin to avoid noise at boundary
+    return tip.y < pip.y - 0.02f;
+}
+
+bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                            bool isRightHand) const {
+    // Thumb is special: Uses X-position instead of Y
+    // because thumb extends sideways, not upward
+    //
+    // For RIGHT hand: Thumb tip should be LEFT of thumb IP (smaller X)
+    // For LEFT hand: Thumb tip should be RIGHT of thumb IP (larger X)
+
+    using LI = LandmarkIndices;
+    const auto& thumbTip = landmarks[LI::THUMB_TIP];
+    const auto& thumbIP = landmarks[LI::THUMB_IP];
+
+    if (isRightHand) {
+        // Right hand: extended thumb has tip to the LEFT of IP
+        return thumbTip.x < thumbIP.x - 0.02f;
+    } else {
+        // Left hand: extended thumb has tip to the RIGHT of IP
+        return thumbTip.x > thumbIP.x + 0.02f;
+    }
+}
+
+bool GestureFSM::isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                  bool isRightHand) const {
+    // Wrapper for consistency with old API
+    return isThumbUp(landmarks, isRightHand);
+}
+
 bool GestureFSM::isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
                                    int mcp, int pip, int dip, int tip) const {
-    // Use curl factor - extended if curl < 0.5
-    float curl = getFingerCurl(landmarks, mcp, pip, dip, tip);
-    return curl < 0.5f;
+    // Use simple Y-based check for consistency
+    return isFingerUp(landmarks, tip, pip);
 }
 
 float GestureFSM::getFingerCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
@@ -362,75 +409,24 @@ float GestureFSM::getPinchDistance(const std::vector<TrackingResult::NormalizedP
     return distance(landmarks[LI::THUMB_TIP], landmarks[LI::INDEX_TIP]);
 }
 
-bool GestureFSM::isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
-    float curl = getThumbCurl(landmarks);
-    return curl < 0.5f;
-}
-
-float GestureFSM::getThumbCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
-    // Thumb curl is special because thumb moves perpendicular to other fingers
+float GestureFSM::getThumbCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+                                bool isRightHand) const {
+    // For the curl value, we use the simple X-based check
+    // Extended = 0.0, Curled = 1.0
     using LI = LandmarkIndices;
 
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
     const auto& thumbIP = landmarks[LI::THUMB_IP];
-    const auto& thumbMCP = landmarks[LI::THUMB_MCP];
-    const auto& thumbCMC = landmarks[LI::THUMB_CMC];
-    const auto& indexMCP = landmarks[LI::INDEX_MCP];
-    const auto& wrist = landmarks[LI::WRIST];
 
-    // Metric 1: Distance from index finger base
-    // Extended thumb is spread away from other fingers
-    float thumbTipToIndex = distance2D(thumbTip, indexMCP);
-    float thumbMCPToIndex = distance2D(thumbMCP, indexMCP);
-
-    float spreadRatio = 0.5f;
-    if (thumbMCPToIndex > 0.001f) {
-        // Extended: tip is ~2x further from index than MCP
-        spreadRatio = thumbTipToIndex / (thumbMCPToIndex * 2.0f);
-        spreadRatio = std::clamp(spreadRatio, 0.0f, 1.0f);
-    }
-    float curlFromSpread = 1.0f - spreadRatio;
-
-    // Metric 2: Extension along thumb direction
-    float thumbDirX = thumbMCP.x - thumbCMC.x;
-    float thumbDirY = thumbMCP.y - thumbCMC.y;
-    float thumbDirLen = std::sqrt(thumbDirX * thumbDirX + thumbDirY * thumbDirY);
-
-    float curlFromExtension = 0.5f;
-    if (thumbDirLen > 0.001f) {
-        thumbDirX /= thumbDirLen;
-        thumbDirY /= thumbDirLen;
-
-        // Project tip onto thumb direction
-        float tipVecX = thumbTip.x - thumbMCP.x;
-        float tipVecY = thumbTip.y - thumbMCP.y;
-        float tipProjection = tipVecX * thumbDirX + tipVecY * thumbDirY;
-
-        // Extended thumb: positive projection
-        // Curled thumb: negative or small projection
-        if (tipProjection > thumbDirLen * 0.5f) {
-            curlFromExtension = 0.0f;  // Extended
-        } else if (tipProjection < thumbDirLen * 0.1f) {
-            curlFromExtension = 1.0f;  // Curled
-        } else {
-            curlFromExtension = 0.5f;  // Ambiguous
-        }
+    // Check if thumb is extended based on X position
+    bool extended = false;
+    if (isRightHand) {
+        extended = thumbTip.x < thumbIP.x - 0.02f;
+    } else {
+        extended = thumbTip.x > thumbIP.x + 0.02f;
     }
 
-    // Metric 3: Distance from wrist
-    float thumbTipToWrist = distance2D(thumbTip, wrist);
-    float thumbIPToWrist = distance2D(thumbIP, wrist);
-
-    float curlFromWrist = 0.5f;
-    if (thumbTipToWrist > thumbIPToWrist * 1.3f) {
-        curlFromWrist = 0.0f;  // Tip is far from wrist - extended
-    } else if (thumbTipToWrist < thumbIPToWrist * 1.05f) {
-        curlFromWrist = 1.0f;  // Tip is close to wrist - curled
-    }
-
-    // Combine metrics
-    float curl = curlFromSpread * 0.4f + curlFromExtension * 0.3f + curlFromWrist * 0.3f;
-    return std::clamp(curl, 0.0f, 1.0f);
+    return extended ? 0.0f : 1.0f;
 }
 
 bool GestureFSM::isVulcanSpread(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {

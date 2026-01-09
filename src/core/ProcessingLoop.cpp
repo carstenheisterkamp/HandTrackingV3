@@ -379,7 +379,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
                 std::vector<TrackingResult::NormalizedPoint> lmPoints;
                 for (const auto& lm : landmarks->landmarks) lmPoints.push_back(lm);
-                auto gesture = _gestureFSMs[h]->update(lmPoints);
+
+                // Determine handedness: Use palm X position as heuristic
+                // Right hand typically appears on the left side of the image (mirrored view)
+                // Left hand typically appears on the right side
+                bool isRightHand = landmarks->palmCenterX < 0.5f;
+
+                auto gesture = _gestureFSMs[h]->update(lmPoints, isRightHand);
 
                 // Build TrackingResult for OSC
                 TrackingResult result;
