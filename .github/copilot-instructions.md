@@ -8,6 +8,7 @@ Key Rules:
 2. **NO utility scripts bloat** (CLion handles deployment)
 3. **STAY FOCUSED on the current TODO item**
 4. **ASK before major changes**
+5. **⚠️ NEVER COMMIT WITHOUT USER TESTING** - Wait for explicit "funktioniert" confirmation
 
 ---
 
