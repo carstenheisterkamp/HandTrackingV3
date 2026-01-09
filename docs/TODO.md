@@ -21,7 +21,31 @@
 
 ---
 
-## 🎯 Aktuelle Aufgabe: Phase 2 Polish - ABGESCHLOSSEN
+## 🎯 Aktuelle Aufgabe: Gesten-Optimierung
+
+**Problem (2026-01-09):**
+- Nur FIST, PEACE, POINTING werden einigermaßen erkannt
+- Andere Gesten (THUMBS_UP, FIVE, etc.) nicht zuverlässig
+- **Ursache:** Fixer Threshold (0.02) funktioniert nicht für alle Entfernungen
+
+**Lösung: Dynamische Thresholds basierend auf Hand-Größe**
+- ✅ Finger-Threshold: 10% der Hand-Größe (clamped 1-3%)
+- ✅ Daumen-Threshold: 15% der Hand-Größe (clamped 1.5-4%)
+- ✅ Debug-Logging für Hand-Größe
+
+**Optimale Entfernung für Erkennung:**
+- **Empfohlen: 40-80cm** von der Kamera
+  - Näher: Hand zu groß, Finger können aus dem Bild ragen
+  - Weiter: Hand zu klein, Landmarks ungenau
+- Hand-Größe im Log: `size=0.10-0.15` = optimal
+  - < 0.08 = zu weit
+  - > 0.20 = zu nah
+
+**Nächster Schritt:** Testen mit verschiedenen Entfernungen
+
+---
+
+## 🎯 Phase 2 Polish - FAST ABGESCHLOSSEN
 
 ### Priorisierte Reihenfolge:
 1. ✅ **Zwei Hände erkennen** - FUNKTIONIERT

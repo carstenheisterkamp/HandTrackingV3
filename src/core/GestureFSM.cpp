@@ -151,9 +151,12 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     // Debug log (every 60 frames)
     static int debugCounter = 0;
     if (++debugCounter % 60 == 1) {
+        // Calculate hand size for debug output
+        float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
         Logger::info("🖐 Gesture (Y-based): T=", thumbUp, " I=", indexUp,
                      " M=", middleUp, " R=", ringUp, " P=", pinkyUp,
-                     " count=", fingerCount, " hand=", (isRightHand ? "R" : "L"));
+                     " count=", fingerCount, " hand=", (isRightHand ? "R" : "L"),
+                     " size=", handSize);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -254,9 +257,19 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
     const auto& tip = landmarks[tipIdx];
     const auto& pip = landmarks[pipIdx];
 
-    // Tip must be significantly higher than PIP (with small margin)
-    // Using 0.02 margin to avoid noise at boundary
-    return tip.y < pip.y - 0.02f;
+    // Dynamic threshold based on hand size for better multi-distance support
+    // Get hand size (wrist to middle MCP distance)
+    using LI = LandmarkIndices;
+    float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
+
+    // Threshold should be proportional to hand size
+    // Close hands (large): ~0.15, Far hands (small): ~0.05
+    // Use 10% of hand size as minimum separation
+    float threshold = handSize * 0.1f;
+    threshold = std::clamp(threshold, 0.01f, 0.03f);  // Clamp between 1-3%
+
+    // Tip must be significantly higher than PIP
+    return tip.y < pip.y - threshold;
 }
 
 bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
@@ -271,12 +284,17 @@ bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& l
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
     const auto& thumbIP = landmarks[LI::THUMB_IP];
 
+    // Dynamic threshold based on hand size
+    float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
+    float threshold = handSize * 0.15f;  // Thumb needs more separation (15%)
+    threshold = std::clamp(threshold, 0.015f, 0.04f);  // Clamp between 1.5-4%
+
     if (isRightHand) {
         // Right hand: extended thumb has tip to the LEFT of IP
-        return thumbTip.x < thumbIP.x - 0.02f;
+        return thumbTip.x < thumbIP.x - threshold;
     } else {
         // Left hand: extended thumb has tip to the RIGHT of IP
-        return thumbTip.x > thumbIP.x + 0.02f;
+        return thumbTip.x > thumbIP.x + threshold;
     }
 }
 
