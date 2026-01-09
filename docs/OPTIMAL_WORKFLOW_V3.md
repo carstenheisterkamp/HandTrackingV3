@@ -1,6 +1,8 @@
 # OPTIMAL_WORKFLOW_V3: 3D Hand Controller Architecture
 
 > **Kernphilosophie:** Wir bauen keinen Computer-Vision-Stack. Wir bauen einen **3D-Controller**.
+> 
+> **Status (2026-01-09):** Phase 2 abgeschlossen - 2D Hand Tracking läuft stabil @ 25-30 FPS
 
 ---
 
@@ -8,13 +10,15 @@
 
 V3 ist eine radikale Vereinfachung: OAK-D wird zum reinen Sensor degradiert, alle Intelligenz wandert auf den Jetson.
 
-| Komponente | V2 (Komplex) | V3 (Simpel) |
-|------------|--------------|-------------|
-| OAK-D | RGB + ObjectTracker + NN | **Nur Sensoren** (RGB + Mono L/R) |
-| Jetson | TensorRT NNs | TensorRT NNs + Stereo + Tracking |
-| XLink | Bidirektional (BBox-Rückkanal) | **Unidirektional** (nur Frames) |
-| Depth | StereoDepth Node | **Punktuelle Tiefe** (Palm Center) |
-| Tracking | ObjectTracker auf VPU | **Kalman Filter** auf CPU |
+| Komponente | V2 (Komplex) | V3 (Simpel) | Status |
+|------------|--------------|-------------|--------|
+| OAK-D | RGB + ObjectTracker + NN | **Nur Sensoren** (RGB + Mono L/R) | ✅ |
+| Jetson | TensorRT NNs | TensorRT NNs + Stereo + Tracking | ✅ (ohne Stereo) |
+| XLink | Bidirektional (BBox-Rückkanal) | **Unidirektional** (nur Frames) | ✅ |
+| Depth | StereoDepth Node | **Punktuelle Tiefe** (Palm Center) | ⬜ Phase 3 |
+| Tracking | ObjectTracker auf VPU | **Kalman Filter** auf CPU | ✅ |
+| Gesten | Heuristiken | **Y-basierte Erkennung** | ✅ |
+| Face Filter | Heuristiken | **Haar Cascade** | ✅ |
 
 **Ergebnis:** Keine API-Lücken, keine BBox-Rückkanal-Probleme, volle Kontrolle.
 

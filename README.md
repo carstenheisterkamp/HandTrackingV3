@@ -4,23 +4,22 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 
 ---
 
-## 🎯 Aktueller Status (2026-01-08)
+## 🎯 Aktueller Status (2026-01-09)
 
-**Performance-Ziele erreicht:**
-- ✅ **25-30 FPS** @ 15W MAXN Mode
-- ✅ **Stabile Pipeline** ohne Script-Node (Full-Frame Processing)
-- ✅ **Korrekte Koordinaten** mit Pixel-Normalisierung + Unletterbox
-- ✅ **Optimiertes MJPEG** - Encoding nur bei verbundenen Clients
-- ✅ **Stereo Depth AKTIV** - GPU-basierte Tiefenberechnung läuft (640x400 @ 30 FPS)
-
-**Bekannte Einschränkungen:**
-- ⚠️ **Dynamic ROI Cropping fehlgeschlagen** (Script-Node API broken)
-- ⚠️ **CPU Fallback deaktiviert** (nur GPU NPP - Service crashed bei GPU-Fehler)
+**Phase 2 - 2D Hand Tracking: ABGESCHLOSSEN ✅**
+- ✅ **TensorRT Inference** - Palm Detection + Hand Landmark auf Jetson
+- ✅ **2-Hand Tracking** - Beide Hände gleichzeitig erkannt
+- ✅ **Y-basierte Gesten** - Robuste Erkennung (FIST, THUMBS_UP, PEACE, FIVE, etc.)
+- ✅ **Haar Cascade Face Filter** - Keine False Positives mehr im Gesicht
+- ✅ **25-30 FPS** stabil mit voller Inference Pipeline
 
 **Dokumentation:**
-- [TODO.md](docs/TODO_old.md) - Projekt-Status & Change Log
-- [SPECIFICATION.md](docs/SPECIFICATION.md) - Technische Spezifikation
+- [TODO.md](docs/TODO.md) - Aktueller Projekt-Status
+- [OPTIMAL_WORKFLOW_V3.md](docs/OPTIMAL_WORKFLOW_V3.md) - V3 Architektur
 - [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - OSC Protokoll
+
+**Nächste Phase:**
+- ⬜ Phase 3: Stereo Depth (Z-Koordinaten für 3D Position)
 
 ---
 

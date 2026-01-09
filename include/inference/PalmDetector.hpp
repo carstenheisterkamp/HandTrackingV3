@@ -3,6 +3,7 @@
 #include "inference/TensorRTEngine.hpp"
 #include <optional>
 #include <array>
+#include <opencv2/objdetect.hpp>
 
 namespace inference {
 
@@ -12,6 +13,8 @@ namespace inference {
  * Uses TensorRT for inference.
  * Input: NV12 frame from OAK-D
  * Output: Single best palm detection (VIP)
+ *
+ * Face Removal: Uses Haar Cascade to detect and exclude face regions
  */
 class PalmDetector {
 public:
@@ -104,6 +107,16 @@ private:
     std::vector<Detection> nmsMulti(const std::vector<Detection>& detections, int maxHands);
     void unletterbox(Detection& det, int origWidth, int origHeight);
     float computeIoU(const Detection& a, const Detection& b);
+
+    // Face detection for removing false positives
+    cv::CascadeClassifier faceDetector_;
+    bool faceDetectorLoaded_ = false;
+    std::vector<cv::Rect> lastFaceRects_;  // Cache face rects for current frame
+    int lastFaceFrameWidth_ = 0;
+    int lastFaceFrameHeight_ = 0;
+
+    void detectFaces(const uint8_t* nv12Data, int width, int height);
+    bool isInFaceRegion(float x, float y, float w, float h) const;
 };
 
 } // namespace inference

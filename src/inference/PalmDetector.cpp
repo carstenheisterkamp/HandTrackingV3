@@ -85,6 +85,27 @@ bool PalmDetector::init(const Config& config) {
     core::Logger::info("  Input: ", config_.inputWidth, "x", config_.inputHeight);
     core::Logger::info("  Anchors: ", anchors_.size());
 
+    // Initialize Haar Cascade Face Detector for false positive removal
+    // Try multiple possible paths for the cascade file
+    std::vector<std::string> cascadePaths = {
+        "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
+        "/usr/local/share/opencv4/haarcascades/haarcascade_frontalface_default.xml",
+        "/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml",
+        "haarcascade_frontalface_default.xml"
+    };
+
+    for (const auto& path : cascadePaths) {
+        if (faceDetector_.load(path)) {
+            faceDetectorLoaded_ = true;
+            core::Logger::info("  Face detector loaded: ", path);
+            break;
+        }
+    }
+
+    if (!faceDetectorLoaded_) {
+        core::Logger::warn("  Face detector not loaded - face filtering disabled");
+    }
+
     return true;
 }
 
@@ -194,17 +215,20 @@ std::vector<PalmDetector::Detection> PalmDetector::detectAll(
         return {};
     }
 
-    // Preprocess: NV12 → RGB → Resize → Normalize
+    // Step 1: Detect faces for false positive filtering
+    detectFaces(nv12Data, frameWidth, frameHeight);
+
+    // Step 2: Preprocess: NV12 → RGB → Resize → Normalize
     preprocessNV12(nv12Data, frameWidth, frameHeight);
 
-    // Run inference with multiple outputs
+    // Step 3: Run inference with multiple outputs
     std::vector<void*> outputPtrs = {outputBuffer_.data(), scoresBuffer_.data()};
     if (!engine_->inferMultiOutput(inputBuffer_.data(), outputPtrs)) {
         core::Logger::error("PalmDetector inference failed");
         return {};
     }
 
-    // Decode output
+    // Step 4: Decode output
     auto detections = decodeOutput(outputBuffer_.data(), scoresBuffer_.data());
 
     // Debug: Log detection stats
@@ -396,6 +420,16 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
             continue;  // Likely face in upper frame
         }
 
+        // Filter 4: Haar Cascade Face Detection
+        // Check if this detection overlaps with a detected face region
+        if (isInFaceRegion(det.x, det.y, det.width, det.height)) {
+            static int rejectCount4 = 0;
+            if (++rejectCount4 % 30 == 1) {
+                core::Logger::info("👤 Filter4 reject (Haar face): x=", det.x, " y=", det.y);
+            }
+            continue;  // Detection is in face region - reject
+        }
+
         // Decode keypoints (7 keypoints, each x,y relative to anchor)
         for (int k = 0; k < 7; ++k) {
             float kpx = box[4 + k * 2] / static_cast<float>(config_.inputWidth);
@@ -405,7 +439,7 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
         }
 
         // ═══════════════════════════════════════════════════════════
-        // Filter 4: Keypoint consistency check for palm detection
+        // Filter 5: Keypoint consistency check for palm detection
         // Real palms have a specific keypoint pattern:
         // - KP0 = wrist, KP2 = middle finger base
         // - These should be separated by a reasonable distance
@@ -427,9 +461,9 @@ std::vector<PalmDetector::Detection> PalmDetector::decodeOutput(const float* box
         float expectedMaxDist = det.width * 1.5f;
 
         if (keypointDist < expectedMinDist || keypointDist > expectedMaxDist) {
-            static int rejectCount4 = 0;
-            if (++rejectCount4 % 100 == 1) {
-                core::Logger::info("🚫 Filter4 reject: kp_dist=", keypointDist,
+            static int rejectCount5 = 0;
+            if (++rejectCount5 % 100 == 1) {
+                core::Logger::info("🚫 Filter5 reject: kp_dist=", keypointDist,
                                    " expected=[", expectedMinDist, ", ", expectedMaxDist, "]");
             }
             continue;  // Keypoints don't match palm pattern
@@ -547,6 +581,94 @@ void PalmDetector::unletterbox(Detection& det, int origWidth, int origHeight) {
     // Clamp to [0, 1]
     det.x = std::clamp(det.x, 0.0f, 1.0f);
     det.y = std::clamp(det.y, 0.0f, 1.0f);
+}
+
+    void PalmDetector::detectFaces(const uint8_t* nv12Data, int width, int height) {
+    if (!faceDetectorLoaded_) {
+        lastFaceRects_.clear();
+        return;
+    }
+
+    // Only re-detect faces if frame size changed or every N frames for efficiency
+    static int faceDetectCounter = 0;
+    if (lastFaceFrameWidth_ == width && lastFaceFrameHeight_ == height && faceDetectCounter++ % 5 != 0) {
+        return;  // Use cached face rects
+    }
+
+    lastFaceFrameWidth_ = width;
+    lastFaceFrameHeight_ = height;
+
+    // Convert NV12 to grayscale for face detection (Y channel only)
+    cv::Mat grayFrame(height, width, CV_8UC1, const_cast<uint8_t*>(nv12Data));
+
+    // Detect faces using Haar Cascade
+    // Use smaller scale factor for speed (1.3 instead of 1.1)
+    // minNeighbors=3 for balance between speed and accuracy
+    lastFaceRects_.clear();
+    faceDetector_.detectMultiScale(
+        grayFrame,
+        lastFaceRects_,
+        1.3,    // scaleFactor - larger = faster but less accurate
+        3,      // minNeighbors - larger = fewer false positives
+        0,      // flags (unused)
+        cv::Size(30, 30),   // minSize - faces smaller than this are ignored
+        cv::Size(width/2, height/2)  // maxSize - faces larger than half frame are ignored
+    );
+
+    // Debug: Log face detections
+    static int faceLogCounter = 0;
+    if (++faceLogCounter % 60 == 1 && !lastFaceRects_.empty()) {
+        core::Logger::info("👤 Face detector: ", lastFaceRects_.size(), " face(s) detected");
+    }
+}
+
+bool PalmDetector::isInFaceRegion(float x, float y, float w, float h) const {
+    if (lastFaceRects_.empty()) {
+        return false;
+    }
+
+    // Convert normalized coordinates to pixel coordinates
+    float pixelX = x * lastFaceFrameWidth_;
+    float pixelY = y * lastFaceFrameHeight_;
+    float pixelW = w * lastFaceFrameWidth_;
+    float pixelH = h * lastFaceFrameHeight_;
+
+    // Check if detection overlaps with any face region
+    for (const auto& faceRect : lastFaceRects_) {
+        // Expand face region by 20% for safety margin
+        float faceX1 = faceRect.x - faceRect.width * 0.1f;
+        float faceY1 = faceRect.y - faceRect.height * 0.1f;
+        float faceX2 = faceRect.x + faceRect.width * 1.1f;
+        float faceY2 = faceRect.y + faceRect.height * 1.1f;
+
+        // Detection bounding box
+        float detX1 = pixelX - pixelW / 2;
+        float detY1 = pixelY - pixelH / 2;
+        float detX2 = pixelX + pixelW / 2;
+        float detY2 = pixelY + pixelH / 2;
+
+        // Check for overlap
+        bool overlapX = (detX1 < faceX2) && (detX2 > faceX1);
+        bool overlapY = (detY1 < faceY2) && (detY2 > faceY1);
+
+        if (overlapX && overlapY) {
+            // Calculate overlap percentage
+            float interX1 = std::max(detX1, faceX1);
+            float interY1 = std::max(detY1, faceY1);
+            float interX2 = std::min(detX2, faceX2);
+            float interY2 = std::min(detY2, faceY2);
+
+            float interArea = (interX2 - interX1) * (interY2 - interY1);
+            float detArea = pixelW * pixelH;
+
+            // If more than 30% of detection is in face region, filter it
+            if (detArea > 0 && interArea / detArea > 0.3f) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 } // namespace inference
