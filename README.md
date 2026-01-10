@@ -30,10 +30,9 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 - **Priorität:** Nach Phase 3 Testing
 
 **Dokumentation:**
-- 🎮 [**OSC_QUICK_REFERENCE.md**](docs/OSC_QUICK_REFERENCE.md) - **← Game Engine Quick Start**
+- 🎮 [**OSC_QUICK_REFERENCE.md**](docs/OSC_QUICK_REFERENCE.md) - **← Game Engine Integration & OSC Protokoll**
 - [TODO.md](docs/TODO.md) - Aktueller Projekt-Status
 - [OPTIMAL_WORKFLOW_V3.md](docs/OPTIMAL_WORKFLOW_V3.md) - V3 Architektur
-- [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - Vollständiges OSC Protokoll
 - [PLAYER_LOCK_DESIGN.md](docs/PLAYER_LOCK_DESIGN.md) - Phase 4 Player Lock System
 
 
