@@ -18,6 +18,7 @@ import sys
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
 
 CONVERSIONS = [
+    # Lite models (default, fast)
     {
         "tflite": "palm_detection_lite.tflite",
         "onnx": "palm_detection.onnx",
@@ -26,6 +27,17 @@ CONVERSIONS = [
     {
         "tflite": "hand_landmark_lite.tflite",
         "onnx": "hand_landmark.onnx",
+        "opset": 13,
+    },
+    # Full models (higher accuracy, slower - for testing)
+    {
+        "tflite": "palm_detection_full.tflite",
+        "onnx": "palm_detection_full.onnx",
+        "opset": 13,
+    },
+    {
+        "tflite": "hand_landmark_full.tflite",
+        "onnx": "hand_landmark_full.onnx",
         "opset": 13,
     },
 ]

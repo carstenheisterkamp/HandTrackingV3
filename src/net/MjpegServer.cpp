@@ -104,6 +104,8 @@ void MjpegServer::update(const cv::Mat& frame) {
         }
     }
 
+    // NOTE: Frame is already mirrored in ProcessingLoop before overlay
+    // So we just encode it directly
     std::vector<uchar> buf;
     std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80};
 

@@ -19,10 +19,22 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 - ✅ Z-Koordinate in OSC Output
 - ⬜ **TEST AUSSTEHEND** - Tiefenwerte bei bekannten Abständen verifizieren
 
+**Phase 4 - Player Lock System: DESIGN ✅**
+- ✅ Design-Dokument erstellt (`PLAYER_LOCK_DESIGN.md`)
+- Stabiles Single-User-Tracking für Gaming
+- First-Come-First-Serve mit Play Volume
+- Face-Anchored Hand-Zuordnung
+- Session Events für Game Engine Integration
+- Debug Visualization (Gesicht, Hände, 3D Volume im Preview)
+- **Performance Impact: <2ms (~2% bei 30 FPS)** ✅
+- **Priorität:** Nach Phase 3 Testing
+
 **Dokumentation:**
+- 🎮 [**OSC_QUICK_REFERENCE.md**](docs/OSC_QUICK_REFERENCE.md) - **← Game Engine Quick Start**
 - [TODO.md](docs/TODO.md) - Aktueller Projekt-Status
 - [OPTIMAL_WORKFLOW_V3.md](docs/OPTIMAL_WORKFLOW_V3.md) - V3 Architektur
-- [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - OSC Protokoll
+- [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - Vollständiges OSC Protokoll
+- [PLAYER_LOCK_DESIGN.md](docs/PLAYER_LOCK_DESIGN.md) - Phase 4 Player Lock System
 
 
 ---

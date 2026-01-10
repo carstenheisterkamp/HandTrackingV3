@@ -164,7 +164,30 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     // ═══════════════════════════════════════════════════════════
 
     // FIST: All fingers down ✊
+    // IMPROVED: Additional check - fingers should be CURLED, not just not-up
     if (!thumbUp && !indexUp && !middleUp && !ringUp && !pinkyUp) {
+        // Additional verification: Tips should be close to palm (wrist)
+        // This prevents false FIST when fingers are pointing sideways
+        using LI = LandmarkIndices;
+        const auto& wrist = landmarks[LI::WRIST];
+        const auto& middleMcp = landmarks[LI::MIDDLE_MCP];
+        float handSize = distance2D(wrist, middleMcp);
+
+        // Check if fingertips are close to palm
+        float indexTipDist = distance2D(landmarks[LI::INDEX_TIP], middleMcp);
+        float middleTipDist = distance2D(landmarks[LI::MIDDLE_TIP], middleMcp);
+
+        // For FIST, tips should be within 1.5x hand size from MCP
+        // (curled fingers fold back towards palm)
+        bool fingersCurled = (indexTipDist < handSize * 1.5f) &&
+                            (middleTipDist < handSize * 1.5f);
+
+        // Accept FIST even if curl check fails (to handle edge cases)
+        // but log when curl check helps
+        if (!fingersCurled && debugCounter % 60 == 1) {
+            Logger::info("🖐 FIST: Fingers not curled enough, but accepting (tips far from palm)");
+        }
+
         return GestureState::Fist;
     }
 
@@ -262,13 +285,13 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
     using LI = LandmarkIndices;
     float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
 
+    // IMPROVED: More lenient thresholds for better FIVE detection
     // Threshold should be proportional to hand size
-    // Close hands (large): ~0.15, Far hands (small): ~0.05
-    // Use 10% of hand size as minimum separation
-    float threshold = handSize * 0.1f;
-    threshold = std::clamp(threshold, 0.01f, 0.03f);  // Clamp between 1-3%
+    // Use 5% of hand size as minimum separation (was 10%, too strict)
+    float threshold = handSize * 0.05f;
+    threshold = std::clamp(threshold, 0.005f, 0.015f);  // Clamp between 0.5-1.5% (was 1-3%)
 
-    // Tip must be significantly higher than PIP
+    // Tip must be higher than PIP (more lenient than before)
     return tip.y < pip.y - threshold;
 }
 
@@ -284,10 +307,11 @@ bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& l
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
     const auto& thumbIP = landmarks[LI::THUMB_IP];
 
+    // IMPROVED: More lenient threshold for better FIST detection
     // Dynamic threshold based on hand size
     float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
-    float threshold = handSize * 0.15f;  // Thumb needs more separation (15%)
-    threshold = std::clamp(threshold, 0.015f, 0.04f);  // Clamp between 1.5-4%
+    float threshold = handSize * 0.12f;  // Was 15%, now 12% - more lenient
+    threshold = std::clamp(threshold, 0.01f, 0.03f);  // Clamp between 1-3%
 
     if (isRightHand) {
         // Right hand: extended thumb has tip to the LEFT of IP

@@ -17,10 +17,18 @@ V3 ist eine radikale Vereinfachung: OAK-D wird zum reinen Sensor degradiert, all
 | XLink | Bidirektional (BBox-Rückkanal) | **Unidirektional** (nur Frames) | ✅ |
 | Depth | StereoDepth Node | **Punktuelle Tiefe** (Palm Center) | 🚧 TEST |
 | Tracking | ObjectTracker auf VPU | **Kalman Filter** auf CPU | ✅ |
+| Player Lock | N/A | **Volume + Face Anchoring** | 📋 Design |
 | Gesten | Heuristiken | **MCP+Angle Erkennung** | ✅ |
 | Face Filter | Heuristiken | **Haar Cascade** | ✅ |
 
 **Ergebnis:** Keine API-Lücken, keine BBox-Rückkanal-Probleme, volle Kontrolle.
+
+**Phase 4 Preview - Player Lock System:**
+- 3D Play Volume Filter (konfigurierbar)
+- Face-Anchored Hand-Zuordnung via Haar Cascade
+- First-Come-First-Serve Session Management
+- OSC Events: `/player/{enter,active,lost,exit}`
+- **Siehe:** `PLAYER_LOCK_DESIGN.md`
 
 ---
 

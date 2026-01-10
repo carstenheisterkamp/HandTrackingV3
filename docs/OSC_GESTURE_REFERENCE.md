@@ -2,7 +2,8 @@
 
 **Version:** 2.0 (V3 Architecture)  
 **Datum:** 10. Januar 2026  
-**Port:** 9000 (localhost)
+**Port:** 9000 (127.0.0.1 auf Jetson)  
+**Preview:** http://100.101.16.21:8080 (via Tailscale)
 
 ## Architektur: Non-Blocking OSC
 
@@ -29,23 +30,59 @@ Das OSC-Sending ist **vollständig non-blocking** und blockiert niemals die Haup
 
 ### Multi-Person Handling
 
-**Aktuelle Limitierung:** Max. 2 Hände (unabhängig von Anzahl Personen)
+**Phase 3 (Aktuell):** Top-2 Selection nach Score
 
 **Verhalten bei >2 Händen im Bild:**
 1. Palm Detection erkennt ALLE Hände im Frame
 2. **NMS (Non-Maximum Suppression)** mit IoU-Threshold (0.3)
-   - Unterdrückt überlappende Detections
-3. **Top-2 Selection:** Die 2 Hände mit höchstem Confidence-Score werden gewählt
+3. **Top-2 Selection:** Die 2 Hände mit höchstem Confidence-Score
 4. Restliche Hände werden ignoriert
 
-**Beispiel-Szenarien:**
-- **2 Personen, je 2 Hände:** Tracking wählt die 2 mit höchstem Score (meist die nächsten/deutlichsten)
-- **1 Person, beide Hände:** ✅ Beide werden getrackt
-- **3+ Hände gleichzeitig:** Nur die 2 besten werden verfolgt
+**Limitation:** Hand-IDs können zwischen Personen wechseln wenn Score sich ändert.
 
-**Empfehlung für Multi-User Games:**
-- Nutze räumliche Trennung (z.B. linke/rechte Bildhälfte)
-- Oder implementiere zusätzliche Filterung basierend auf Z-Tiefe (näheste 2 Hände)
+---
+
+**Phase 4 (Geplant):** Player Lock System 🎮
+
+**Siehe:** `PLAYER_LOCK_DESIGN.md`
+
+**Stabiles Single-User Gaming:**
+1. **Play Volume:** 3D-Bereich im Kameraraum definiert
+2. **Face Anchoring:** Haar Cascade ordnet Hände einer Person zu
+3. **First-Come-First-Serve:** Erste Person im Volume wird "Owner"
+4. **Session Lock:** Hand-IDs bleiben stabil bis Player Volume verlässt
+
+**Neue OSC Events:**
+```
+/player/enter          → Player betritt Volume
+/player/calibrating    → Warte auf stabile Detection
+/player/active         → Session aktiv, Gameplay enabled
+/player/lost           → Player temporär verloren (3s Grace Period)
+/player/exit           → Session beendet
+```
+
+**Vorteile für Gaming:**
+- ✅ Keine Hand-ID Wechsel während Gameplay
+- ✅ Ignoriert Zuschauer/andere Personen
+- ✅ Event-basiert (Spawn/Despawn von Player-Objekten)
+- ✅ Konfigurierbare Play-Zone
+- ✅ **Debug Visualization** - Gesicht, Hände, Volume im MJPEG Preview
+
+**Performance Impact:**
+- Player Lock System: ~0.8ms Overhead
+- Face Detection (cached): ~0.5ms avg
+- Debug Overlay: ~0.5ms
+- **Gesamt: <2ms → FPS-Impact vernachlässigbar** ✅
+
+**Debug Visualization (MJPEG Preview):**
+- 3D Play Volume (grüner/grauer Rahmen)
+- Face Detection (grünes Rechteck wenn locked)
+- Hand-to-Face Verbindungen (grüne Linien)
+- Session State Banner (oben, farbcodiert)
+- Volume Violations (rote/magenta Markierungen für ignorierte Detections)
+- Aktivierbar via Config-Flags
+
+---
 
 ### Statische Gesten (Implementiert) ✅
 

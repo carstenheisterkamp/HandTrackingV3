@@ -36,6 +36,29 @@ int main() {
     const std::string OSC_HOST = "127.0.0.1";
     const std::string OSC_PORT = "9000";
 
+    // ═══════════════════════════════════════════════════════════
+    // MODEL SELECTION - Easy switching for testing
+    // ═══════════════════════════════════════════════════════════
+    // Set to true to use full models (better accuracy, slower)
+    // Set to false to use lite models (faster, less accurate)
+    const bool USE_FULL_MODELS = true;  // ← FULL models aktiv
+
+    // Model paths (automatically selected based on flag)
+    const std::string PALM_MODEL = USE_FULL_MODELS
+        ? "models/palm_detection_full.onnx"
+        : "models/palm_detection.onnx";
+
+    const std::string LANDMARK_MODEL = USE_FULL_MODELS
+        ? "models/hand_landmark_full.onnx"
+        : "models/hand_landmark.onnx";
+
+    core::Logger::info("═══════════════════════════════════════════════");
+    core::Logger::info("MODEL CONFIGURATION");
+    core::Logger::info("  Mode: ", USE_FULL_MODELS ? "FULL (High Accuracy)" : "LITE (Fast)");
+    core::Logger::info("  Palm Model: ", PALM_MODEL);
+    core::Logger::info("  Landmark Model: ", LANDMARK_MODEL);
+    core::Logger::info("═══════════════════════════════════════════════");
+
         // Outer Loop for auto-restart
     while (g_running) {
         try {
@@ -74,6 +97,10 @@ int main() {
 
             // 6. Start Processing Loop
             core::ProcessingLoop processingLoop(processingQueue, framePool, oscQueue);
+
+            // Configure model paths (must be done before start())
+            processingLoop.setModelPaths(PALM_MODEL, LANDMARK_MODEL);
+
             processingLoop.start();
 
             core::Logger::info("Service running. Press Ctrl+C to exit.");

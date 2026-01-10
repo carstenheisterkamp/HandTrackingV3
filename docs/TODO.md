@@ -1,378 +1,200 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 3 - Stereo Depth IN ARBEIT 🚧
+> **Aktuelle Phase:** Phase 3 - Stereo Depth Testing 🧪
 > **Letztes Update:** 2026-01-10
-> **Status:** 2D Tracking ✅ komplett, 3D Integration gestartet
+> **Status:** 2D Tracking ✅ | 3D Code ✅ | Testing ⬜
 
 ---
 
-## 🎉 MEILENSTEIN: Phase 2 Abgeschlossen!
+## 🎯 Aktuelle Aufgabe: Phase 3 Testing
 
-**Datum:** 2026-01-09
-
-**Was funktioniert:**
-- ✅ **2-Hand Tracking** - Beide Hände parallel erkannt und getrackt
-- ✅ **MCP+Angle Gesten** - Robuste Erkennung mit Fallback
-  - FIST ✊, THUMBS_UP 👍, POINTING ☝️, PEACE ✌️, FIVE 🖐️, METAL 🤘, etc.
-- ✅ **Haar Cascade Face Filter** - Null False Positives im Gesicht
-- ✅ **Kalman Tracking** - Smooth 6-State Filter
-- ✅ **OSC Output** - Hand-IDs, Position, Velocity, Gesten
-- ✅ **25-30 FPS** stabil mit voller Pipeline
-
----
-
-## 🎯 Aktuelle Aufgabe: Phase 3 - Stereo Depth
-
-**Ziel:** Z-Koordinate (Tiefe) für 3D Hand Position
-
-**Was bereits existiert:**
-- ✅ StereoDepth.cpp - Punktuelle Tiefenmessung am Palm Center
-- ✅ StereoKernel.cu - CUDA SAD Block Matching
-- ✅ PipelineManager - Mono L/R Streams (wenn enableStereo=true)
-- ✅ Default Kalibrierung (OAK-D Pro PoE ~75mm Baseline)
-
-**TODO Phase 3:**
-- ⬜ `enableStereo=true` in main.cpp aktivieren
-- ⬜ InputLoop: Mono L/R aus MessageGroup extrahieren
-- ⬜ Frame: Mono-Daten speichern (monoLeft, monoRight)
-- ⬜ ProcessingLoop: StereoDepth am Palm Center aufrufen
-- ⬜ Z-Koordinate in OSC Output integrieren
-- ⬜ **TEST:** Bekannte Abstände (50cm, 100cm) verifizieren
-
-**Nächster Schritt:** Integration testen wenn Kamera verfügbar
-
----
-
-## 🎯 Phase 2 Polish - FAST ABGESCHLOSSEN
-
-### Priorisierte Reihenfolge:
-1. ✅ **Zwei Hände erkennen** - FUNKTIONIERT
-2. ✅ **Gesten-Erkennung** - Y-basierte Logik läuft robust
-3. ✅ **False Positive Filter** - Haar Cascade eliminiert Gesichter
-4. ⬜ **Erweiterung auf 3D** (Stereo Depth) → Phase 3
-
----
-
-## 📋 Backlog / Später
-
-### 🎛️ One-Euro Filter (Optional - Falls Kalman nicht ausreicht)
-**Problem:** Kalman Filter glättet gut bei konstanter Geschwindigkeit, aber bei schnellen Richtungswechseln kann es Lag geben.
-
-**Lösung:** One-Euro Filter ergänzen
-- Bessere Reaktion auf schnelle Bewegungen
-- Adaptive Cutoff-Frequenz basierend auf Velocity
-- Besonders gut für UI/Gaming wo schnelle Präzision wichtig ist
-
-**Referenz:** http://cristal.univ-lille.fr/~casiez/1euro/
-
-**Priorität:** Nach Phase 3 Testing - nur wenn User Feedback zeigt, dass Kalman nicht reicht
-
-**Implementation:**
-- ⬜ One-Euro Filter Klasse (`core/OneEuroFilter.hpp/cpp`)
-- ⬜ Optional aktivierbar via Config-Flag
-- ⬜ Parallel zu Kalman oder als Ersatz
-- ⬜ Parameter: `minCutoff=1.0`, `beta=0.007`, `dcutoff=1.0`
-
----
-
-### 🔌 Service Resilience (LAN/Kamera Reconnect)
-**Problem:** Service crashed oder hängt wenn:
-- LAN-Verbindung zur OAK-D unterbrochen wird
-- Kamera getrennt/reconnected wird
-- Netzwerk kurzzeitig ausfällt
+**Implementiert (2026-01-10):**
+- ✅ Stereo Depth am Palm Center
+- ✅ Z-Koordinate in OSC Output
+- ✅ Debug Overlay mit Volume, Delta, Z-Werten
+- ✅ Gesten-Thresholds optimiert (FIVE/FIST verbessert)
 
 **TODO:**
-- ⬜ Automatische Reconnect-Logik bei Kamera-Disconnect
-- ⬜ Graceful Degradation bei Netzwerkproblemen
-- ⬜ Watchdog für Device-Health
-- ⬜ Retry-Mechanismus mit exponential backoff
-- ⬜ Logging von Connection-Events
+- ⬜ **TEST auf Jetson:** Tiefenwerte bei 50cm, 100cm, 150cm verifizieren
+- ⬜ **TEST:** Gesten-Erkennung (FIVE vs FOUR, FIST bei 2 Händen)
+- ⬜ **OPTIONAL:** Full Models testen (bessere Accuracy vs FPS)
+  - Siehe `MODEL_TESTING.md` für Anleitung
+  - Umschalten via `USE_FULL_MODELS` Flag in main.cpp
+- ⬜ Bei Bedarf: Device-Kalibrierung laden (statt Default)
+- ⬜ Bei Bedarf: Rectification Maps für bessere Stereo-Accuracy
 
-**Priorität:** Nach Phase 3 (Stereo Depth)
-
----
-
-### Phase 2.6: Multi-Hand Support - ✅ FUNKTIONIERT
-**Was wurde hinzugefügt:**
-- ✅ `PalmDetector::detectAll()` - Erkennt bis zu 2 Hände
-- ✅ `nmsMulti()` mit echtem IoU-basiertem NMS
-- ✅ ProcessingLoop verarbeitet beide Hände parallel
-- ✅ 2x HandTracker (Kalman) + 2x GestureFSM
-- ✅ OSC Pfade mit Hand-ID: `/hand/0/palm`, `/hand/1/palm`
-- ✅ Debug-Overlay zeigt beide Hände (unterschiedliche Farben)
-- ✅ `TrackingResult.handId` für OSC-Routing
-- ✅ Bounding Box um GANZE Hand (alle 21 Landmarks)
-
-**Ergebnis:** 2 Hände werden erkannt und gut getrackt! ✅
-
-### Phase 2.7: Gesten-Erkennung Fix - ✅ VEREINFACHT (Y-basiert)
-**Problem:** Winkelabhängige Fehlerkennungen (FIST↔THUMBS_UP, POINTING↔TWO/THREE, etc.)
-
-**Ursache:**
-- Komplexe Curl/Winkel-Berechnungen versagen bei verschiedenen Kamerawinkeln
-- Keine Links/Rechts-Unterscheidung für Daumen
-
-**Neuer Ansatz (nach Python/MediaPipe Artikel):**
-- ✅ **Y-basierte Finger-Erkennung**: `tip.y < pip.y` = Finger oben
-  - Simpel, robust, winkelunabhängig
-  - Funktioniert weil Y immer "oben/unten" im Bild ist
-- ✅ **X-basierte Daumen-Erkennung**: Unterscheidet Links/Rechts
-  - Rechte Hand: `tip.x < ip.x` = Daumen ausgestreckt
-  - Linke Hand: `tip.x > ip.x` = Daumen ausgestreckt
-- ✅ **Automatische Handedness-Erkennung**:
-  - Palm X < 0.5 = Rechte Hand (gespiegelte Ansicht)
-  - Palm X > 0.5 = Linke Hand
-- ✅ Alte Curl-Faktoren entfernt (zu komplex)
-- ✅ Alte Winkelberechnungen entfernt (versagen bei Seitenansicht)
-
-**Erwartete Verbesserungen:**
-- FIST vs THUMBS_UP: Durch Links/Rechts-Unterscheidung
-- POINTING vs TWO/THREE: Durch einfache Y-Prüfung
-- FIVE vs FIST bei Winkel: Durch robuste Y-Prüfung
-
-### Phase 2.8: False Positive Filter - ✅ FUNKTIONIERT
-**Problem:** Gesicht wird als Hand erkannt (Nase/Mund-Bereich)
-
-**Lösung: Haar Cascade Face Detector:**
-- ✅ **OpenCV Haar Cascade** integriert (`haarcascade_frontalface_default.xml`)
-- ✅ Face Detection auf NV12 Y-Channel (schnell, Grayscale)
-- ✅ Gecached (alle 5 Frames neu detektiert)
-- ✅ **Overlap-Check**: >30% Overlap mit Gesicht → abgelehnt
-- ✅ 20% Margin um Gesichtsbereich
-- ✅ **Ergebnis: Null False Positives im Gesicht**
-
-**Heuristische Filter (weiterhin aktiv):**
-- ✅ Score-Threshold: 0.75
-- ✅ Face-Zone: Obere 40%, Score < 0.85 → reject
-- ✅ Aspect-Ratio: 0.3 - 3.0
-- ✅ Keypoint-Konsistenz
-
-
-### Phase 2.1: TensorRT Engine Wrapper
-- [x] TensorRTEngine.hpp/.cpp erstellen
-- [x] Engine laden/erstellen (.onnx → .engine)
-- [x] Inference Methode (Input → Output Buffer)
-- [x] CUDA Memory Management
-
-### Phase 2.2: Palm Detection
-- [x] PalmDetector.hpp/.cpp erstellen
-- [x] TFLite Model heruntergeladen (palm_detection_lite.tflite)
-- [ ] TFLite → ONNX konvertieren (auf Jetson: convert_to_onnx.py)
-- [x] NV12 → RGB Preprocessing (GPU)
-- [x] Post-Processing (BBox, Score, Anchors)
-
-### Phase 2.3: Hand Landmark
-- [x] HandLandmark.hpp/.cpp erstellen
-- [x] ROI Extraction aus Palm Detection
-- [x] 21 Landmarks Output Parsing
-- [x] Unletterbox Koordinaten
-
-### Phase 2.4: ProcessingLoop Integration
-- [x] PalmDetector + HandLandmark in ProcessingLoop einbinden
-- [x] HandTracker + GestureFSM integrieren
-- [x] TFLite Models heruntergeladen
-- [ ] TFLite → ONNX konvertieren (auf Jetson)
-- [ ] Test: 30+ FPS mit NNs verifizieren
+**Nächster Schritt:** Testen wenn Kamera verfügbar 🎥
 
 ---
 
-## 📅 Roadmap
+## 📅 Development Roadmap
 
-### ✅ Phase 1: Sensor-Only Pipeline - ERLEDIGT
-**Ergebnis:** 30 FPS stabil auf Jetson
+### ✅ Phase 1: Sensor-Only Pipeline (Abgeschlossen)
+- RGB 640×360 NV12 @ 30 FPS
+- Mono L/R 640×400 GRAY8 @ 30 FPS
+- Sync Node für synchronisierte Streams
+- **Ergebnis:** Stabile 30 FPS auf Jetson
 
-| Task | Status | Notes |
-|------|--------|-------|
-| PipelineManager: Mono L/R hinzufügen | ✅ | THE_400_P @ 60fps |
-| PipelineManager: RGB 640×360 NV12 | ✅ | LETTERBOX mode |
-| PipelineManager: Sync Node | ✅ | 10ms threshold |
-| InputLoop: MessageGroup parsing | ✅ | rgb + monoLeft + monoRight |
-| Types.hpp: V3 Konstanten | ✅ | GestureState, Point3D, etc. |
-| Config: FPS auf 60 ändern | ✅ | main.cpp |
-| Test: 60 FPS verifizieren | ⬜ | Auf Jetson deployen |
+### ✅ Phase 2: TensorRT Inference (Abgeschlossen)
+- Palm Detection TensorRT Engine (.onnx → .engine)
+- Hand Landmark TensorRT Engine
+- 2-Hand Tracking mit Kalman Filter
+- MCP+Angle Gestenerkennung (13 Gesten)
+- Haar Cascade Face Filter (0 False Positives)
+- **Ergebnis:** 25-30 FPS mit beiden Händen
 
-### Phase 2: TensorRT Inference ✅
-**Ziel:** Hand-NNs auf Jetson mit TensorRT
+### 🧪 Phase 3: Stereo Depth (Testing)
+**Implementiert (2026-01-10):**
 
-| Task | Status | Notes |
-|------|--------|-------|
-| TensorRT Engine Wrapper | ✅ | Generische Klasse |
-| Palm Detection TRT Engine | ✅ | .onnx → .engine |
-| Hand Landmark TRT Engine | ✅ | .onnx → .engine |
-| NV12 → RGB Preprocessing (GPU) | ✅ | CUDA/NPP |
-| LETTERBOX Preprocessing | ✅ | GPU-seitig |
-| Unletterbox Postprocessing | ✅ | Koordinaten zurückmappen |
-| ProcessingLoop Integration | ✅ | Inference Pipeline |
-| Test: 30+ FPS verifizieren | ✅ | Mit beiden NNs |
+| Komponente | Status | Details |
+|------------|--------|---------|
+| Pipeline: Mono L/R | ✅ | enableStereo=true aktiviert |
+| StereoDepth Class | ✅ | Punktuelle Messung am Palm |
+| Z-Koordinate Output | ✅ | In OSC /hand/{id}/palm |
+| Debug Overlay | ✅ | Volume + Delta + Z-Werte |
+| Gesten-Optimierung | ✅ | FIVE/FIST Thresholds verbessert |
 
-### Phase 3: Stereo Depth (Punktuell) - IN ARBEIT 🚧
-**Ziel:** Z-Koordinate nur am Palm Center
+**Ausstehend:**
+- ⬜ Testen bei 50cm, 100cm, 150cm
+- ⬜ Optional: Device-Kalibrierung laden
+- ⬜ Optional: Rectification Maps
 
-| Task | Status | Notes |
-|------|--------|-------|
-| StereoDepth Klasse | ✅ | src/core/StereoDepth.cpp |
-| OAK-D Kalibrierung laden | ✅ | Default-Werte implementiert |
-| Lokales Stereo Matching (9×9) | ✅ | SAD Block Matching |
-| Median Filter für Robustheit | ✅ | robustMedian() |
-| Z in Kamera-Koordinaten | ✅ | pixelTo3D() |
-| Pipeline: Mono L/R Streams | ✅ | enableStereo=true |
-| InputLoop: Mono L/R extrahieren | ✅ | MessageGroup parsing |
-| ProcessingLoop: Z am Palm | ✅ | getDepthAtPoint() |
-| Z in OSC Output | ✅ | /hand/palm z-coordinate |
-| Rectification Maps berechnen | ⬜ | TODO: OpenCV stereoRectify |
-| Device Kalibrierung laden | ⬜ | dai::Device::readCalibration() |
-| **TEST: Tiefe verifizieren** | ⬜ | Bekannte Abstände (50cm, 100cm) |
+### 📋 Phase 4: Player Lock System (Design Ready)
+**Ziel:** Stabiles Single-User Gaming
 
-### Phase 4: Kalman Tracking
-**Ziel:** Glatte, prädiktive Trajektorien
+**Design:** `PLAYER_LOCK_DESIGN.md` ✅
 
-| Task | Status | Notes |
-|------|--------|-------|
-| HandTracker Klasse | ✅ | src/core/HandTracker.cpp |
-| 6-State Kalman Filter | ✅ | [x,y,z,vx,vy,vz] |
-| VIP Lock Logic (15 Frames) | ✅ | ~250ms Stabilität |
-| Dropout Handling | ✅ | Pure Prediction |
-| +1 Frame Prediction | ✅ | Latenz-Kompensation |
-| One-Euro für Rotationen | ⬜ | Landmarks-relativ |
-| Test: Jitter messen | ⬜ | <5ms σ Ziel |
+| Komponente | Status |
+|------------|--------|
+| 3D Play Volume Filter | ⬜ |
+| Face-Anchored Tracking | ⬜ |
+| Session FSM (IDLE/ACTIVE/LOST) | ⬜ |
+| OSC Events (/player/*) | ⬜ |
+| Multi-Person Ignoring | ⬜ |
 
-### Phase 5: Gesture FSM
-**Ziel:** Robuste Gesten-Erkennung
+**Priorität:** Nach Phase 3 Testing
 
-| Task | Status | Notes |
-|------|--------|-------|
-| GestureFSM Klasse | ✅ | src/core/GestureFSM.cpp |
-| States definieren | ✅ | Idle/Palm/Pinch/Grab/Point |
-| Hysteresis Thresholds | ✅ | Enter/Exit unterschiedlich |
-| Debounce (3 Frames) | ✅ | ~50ms @ 60fps |
-| Finger Extension Check | ✅ | Landmark-basiert |
-| Test: Gesten-Übergänge | ⬜ | Kein Flackern |
+### 📋 Phase 5: Dynamische Gesten
+**Ziel:** Velocity-basierte Gesten
 
-### Phase 6: OSC Integration
-**Ziel:** 30 Hz konstante Ausgabe
+| Geste | Trigger | Status |
+|-------|---------|--------|
+| SWIPE_LEFT/RIGHT | \|vx\| > 0.4 | ⬜ |
+| SWIPE_UP/DOWN | \|vy\| > 0.4 | ⬜ |
+| PUSH | vz > 0.3 | ⬜ |
+| PUNCH | FIST + vz > 0.4 | ⬜ |
 
-| Task | Status | Notes |
-|------|--------|-------|
-| 30 Hz Rate Limiting | ⬜ | Decoupled von FPS |
-| Drop-Oldest >50ms | ✅ | Backpressure implementiert |
-| /hand/palm Message | ✅ | x, y, z |
-| /hand/velocity Message | ✅ | vx, vy, vz |
-| /hand/gesture Message | ✅ | state, confidence, name |
-| /hand/vip Message | ✅ | vipLocked |
-| /service/status Message | ⬜ | Heartbeat |
-| Test: E2E Latenz <60ms | ⬜ | Glass-to-OSC |
+**Voraussetzung:** Phase 3 (Velocity.vz verfügbar)
 
 ---
 
-## 📋 Quick Reference
+## 📋 Backlog (Optional Features)
 
-### Wichtige Konstanten (V3)
+### 🎛️ One-Euro Filter
+**Wann:** Falls Kalman Filter bei schnellen Richtungswechseln laggt
+- Adaptive Cutoff-Frequenz basierend auf Velocity
+- Bessere Reaktion für schnelle Gaming-Bewegungen
+- **Referenz:** http://cristal.univ-lille.fr/~casiez/1euro/
+
+### 🔌 Service Resilience
+**Wann:** Für Production-Umgebungen
+- Automatische OAK-D Reconnect bei Disconnect
+- Watchdog für Device-Health
+- Graceful Degradation bei Netzwerkproblemen
+
+### 🎨 Advanced Debug Features
+- Z-Depth Heatmap im Preview
+- Landmark IDs als Nummern anzeigen
+- Performance-Graphen (FPS über Zeit)
+
+---
+
+## 📝 Quick Reference
+
+### Implementierte Features (Stand 2026-01-10)
+- ✅ 2-Hand Tracking (max. 2 Hände gleichzeitig)
+- ✅ 13 Statische Gesten (FIST, FIVE, PEACE, METAL, etc.)
+- ✅ 3D Position mit Stereo Depth (x, y, z)
+- ✅ Kalman Filter (Position + Velocity + Delta)
+- ✅ Haar Cascade Face Filter (0 False Positives)
+- ✅ OSC Output @ 30 Hz non-blocking
+- ✅ MJPEG Debug Preview mit Play Volume
+- ✅ 25-30 FPS stabil auf Jetson Orin Nano
+
+### Konstanten
 ```cpp
-// Camera
-CAMERA_FPS = 60
-RGB_WIDTH = 640, RGB_HEIGHT = 360
-MONO_WIDTH = 640, MONO_HEIGHT = 400
-
-// Tracking
-VIP_LOCK_FRAMES = 15
-DROPOUT_LIMIT = 5
-
-// Gestures
-PINCH_THRESHOLD_ENTER = 0.08
-PINCH_THRESHOLD_EXIT = 0.12
-DEBOUNCE_FRAMES = 3
-
-// OSC
-OSC_RATE_HZ = 30
-MAX_LATENCY_MS = 50
+CAMERA_FPS = 30
+RGB_PREVIEW = 640×360 NV12
+MONO_STEREO = 640×400 GRAY8
+OSC_RATE = 30 Hz
+DEBOUNCE = 3 frames (~100ms)
 ```
 
-### Dateien die geändert werden
-- `src/core/PipelineManager.cpp` - Sensor-Only Pipeline
-- `include/core/PipelineManager.hpp` - Config Updates
-- `src/core/InputLoop.cpp` - MessageGroup Parsing
-- `src/main.cpp` - FPS Config
-- `include/core/Types.hpp` - Neue Typen
+---
 
-### Neue Dateien (geplant)
-- `src/inference/TensorRTEngine.cpp` - TRT Wrapper
-- `src/inference/PalmDetector.cpp` - Palm Detection
-- `src/inference/HandLandmark.cpp` - Landmark Inference
-- `src/core/HandTracker.cpp` - Kalman Filter
-- `src/core/GestureFSM.cpp` - Gesten State Machine
-- `src/core/StereoDepth.cpp` - Punktuelle Tiefe
+## ⚠️ Bekannte Issues
+
+1. **Gesten-Erkennung:**
+   - FIVE wird manchmal als FOUR erkannt → Thresholds optimiert (2026-01-10)
+   - FIST bei 2 Händen inkonsistent → Curl-Check hinzugefügt (2026-01-10)
+   - **Status:** Verbesserungen implementiert, Testing ausstehend
+
+2. **Stereo Depth:**
+   - Nutzt Default-Kalibrierung (75mm Baseline)
+   - Keine Rectification Maps (kann Accuracy reduzieren)
+   - **Status:** Funktioniert, aber ungetestet bei bekannten Abständen
+
+3. **OAK-D PoE Reconnect:**
+   - Service verbindet sich manchmal nicht nach Neustart
+   - **Workaround:** Jetson neu starten oder `scripts/fix_oak_reconnect.sh`
 
 ---
 
-## 📝 Notizen
+## ✅ Erledigte Aufgaben (Archiv)
 
-### 2026-01-09
-- V3 Architektur definiert: OAK-D = Sensor-Only
-- Kernprinzip: "Wir bauen einen 3D-Controller, kein CV-System"
-- XLink bleibt unidirektional (kein BBox-Rückkanal-Problem)
-- Start mit Phase 1: Sensor-Only Pipeline
+### 🎉 Meilenstein: 2026-01-10 - Phase 3 Code Complete
+**Stereo Depth + Overlay Improvements**
+- [x] enableStereo=true aktiviert
+- [x] Z-Koordinate in OSC Output
+- [x] Debug Overlay: Play Volume Box
+- [x] Debug Overlay: Delta/Acceleration Display
+- [x] Debug Overlay: Persistente Hand-Slots (kein Flickering)
+- [x] Gesten-Thresholds optimiert (5% statt 10%)
+- [x] FIST Curl-Check hinzugefügt
 
-**Umbau durchgeführt:**
-- PipelineManager komplett auf Sensor-Only umgebaut
-  - RGB 640×360 NV12 @ 60fps (LETTERBOX)
-  - Mono L/R 640×400 GRAY8 @ 60fps
-  - Sync Node mit 10ms Threshold
-  - Keine NNs mehr auf OAK-D
-- InputLoop nur noch Sync-Mode (kein Fallback auf RGB-only)
-- Neue Komponenten implementiert:
-  - HandTracker: Kalman Filter mit 6 States [x,y,z,vx,vy,vz]
-  - GestureFSM: State Machine (Idle/Palm/Pinch/Grab/Point)
-  - StereoDepth: Punktuelle Tiefe am Palm Center
-- Types.hpp mit V3 Konstanten und neuen Typen
+### 🎉 Meilenstein: 2026-01-09 - Phase 2 Complete
+**2D Hand Tracking Fully Functional**
+- [x] 2-Hand Detection mit NMS
+- [x] TensorRT Palm + Landmark
+- [x] Kalman Filter [x,y,z,vx,vy,vz]
+- [x] 13 Gesten (Y-basiert + MCP-Angle Fallback)
+- [x] Haar Cascade Face Filter
+- [x] OSC Non-Blocking Output
+- [x] 25-30 FPS stabil
 
-**Nächster Schritt:** Auf Jetson deployen und 60 FPS testen
+### Phase 2 Sub-Tasks (2026-01-06 bis 2026-01-09)
+- [x] TensorRT Engine Wrapper
+- [x] Palm Detection TensorRT
+- [x] Hand Landmark TensorRT
+- [x] TFLite → ONNX Conversion
+- [x] NV12 → RGB Preprocessing (CUDA/NPP)
+- [x] Multi-Hand Support (detectAll + nmsMulti)
+- [x] HandTracker + GestureFSM Integration
+- [x] Gesture Recognition (MCP+Angle)
+- [x] False Positive Filter (Haar Cascade)
+- [x] OSC Integration (/hand/{id}/*)
+- [x] MJPEG Debug Preview
 
----
+### Phase 1: Sensor-Only Pipeline (2026-01-05)
+- [x] PipelineManager: RGB + Mono L/R
+- [x] Sync Node für synchronized streams
+- [x] InputLoop: MessageGroup parsing
+- [x] Types.hpp: V3 Konstanten
+- [x] 30 FPS auf Jetson verifiziert
 
-## ⚠️ Bekannte Risiken / Offene Punkte
-
-1. **OAK-D PoE Reconnect:** 
-   - Problem: Nach Neustart des Service verbindet sich OAK-D manchmal nicht (Reset Problem).
-   - Workaround: Jetson neu starten. 
-   - TODO: `scripts/fix_oak_reconnect.sh` testen und integrieren (Später).
-
-2. **PoE Bandwidth:** 60fps × (RGB + 2×Mono) = ~40-50 MB/s → sollte passen (GigE = 125 MB/s)
-3. **TensorRT Conversion:** Erster Start dauert lange (Engine Build).
-
----
-
-## ✅ Erledigte Aufgaben
-
-### 🎉 MEILENSTEIN 2026-01-09: Erste funktionierende Hand-Erkennung
-- [x] Palm Detection läuft mit TensorRT
-- [x] Hand Landmark extrahiert 21 Keypoints
-- [x] Skeleton-Rendering im MJPEG-Preview
-- [x] OSC sendet Tracking-Daten
-- [x] HandTracker + GestureFSM integriert
-
-### Frühere Aufgaben
+### Initial Setup
 - [x] OPTIMAL_WORKFLOW_V3.md erstellt
 - [x] TODO.md erstellt
-- [x] PipelineManager.cpp: V3 Sensor-Only Pipeline (RGB + Mono L/R + Sync)
-- [x] PipelineManager.hpp: Config erweitert (monoWidth, monoHeight, enableStereo)
-- [x] InputLoop.cpp: MessageGroup Parsing für Sync Queue
-- [x] main.cpp: 30 FPS Config, enableStereo=false
-- [x] Types.hpp: V3 Konstanten, GestureState enum, Point3D, Velocity3D
-- [x] HandTracker.cpp/.hpp: 6-State Kalman Filter mit VIP Lock
-- [x] GestureFSM.cpp/.hpp: Gesture State Machine mit Hysteresis
-- [x] StereoDepth.cpp/.hpp: Punktuelle Tiefenmessung (9×9 Window)
-- [x] CMakeLists.txt: Neue Dateien hinzugefügt
-- [x] **CODE CLEANUP:**
-  - [x] ProcessingLoop.cpp: Komplett neu geschrieben (815→250 Zeilen)
-  - [x] ProcessingLoop.hpp: Vereinfacht, alte Filter entfernt
-  - [x] Frame.hpp: nnData/palmData als DEPRECATED markiert
-  - [x] docs/: Alte Dateien ins Archive verschoben
-- [x] **OSC INTEGRATION (V3):**
-  - [x] OscSender.cpp: /hand/palm (x,y,z) Message
-  - [x] OscSender.cpp: /hand/velocity (vx,vy,vz) Message
-  - [x] OscSender.cpp: /hand/gesture (state, confidence, name) Message
-  - [x] OscSender.cpp: /hand/vip (locked) Message
-- [x] **STATS & DEBUG:**
-  - [x] ProcessingLoop: Hand-Stats im Terminal-Log
-  - [x] ProcessingLoop: Hand-Info im MJPEG Debug-Overlay
+- [x] CMakeLists.txt angepasst
+- [x] Code Cleanup (ProcessingLoop 815→250 Zeilen)
 

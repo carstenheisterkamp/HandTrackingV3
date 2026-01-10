@@ -50,6 +50,25 @@ public:
     void stop();
     bool isRunning() const;
 
+    /**
+     * Set model paths before starting (for model selection)
+     * Call this before start() to use custom models
+     */
+    void setModelPaths(const std::string& palmModel, const std::string& landmarkModel) {
+        _palmModelPath = palmModel;
+        _landmarkModelPath = landmarkModel;
+    }
+
+    /**
+     * Get current model type for display (LITE or FULL)
+     */
+    std::string getModelType() const {
+        if (_palmModelPath.find("_full") != std::string::npos) {
+            return "FULL";
+        }
+        return "LITE";
+    }
+
 private:
     void loop();
     void processFrame(Frame* frame);
@@ -95,15 +114,23 @@ private:
     int _lastHandCount = 0;
     struct HandState {
         float palmX = 0.0f, palmY = 0.0f, palmZ = 0.0f;
-        float velX = 0.0f, velY = 0.0f;
+        float velX = 0.0f, velY = 0.0f, velZ = 0.0f;
+        float deltaX = 0.0f, deltaY = 0.0f, deltaZ = 0.0f;  // Acceleration/Delta
         std::string gesture = "None";
         bool vipLocked = false;
+
+        // Previous velocity for delta calculation
+        float prevVelX = 0.0f, prevVelY = 0.0f, prevVelZ = 0.0f;
     };
     std::array<HandState, MAX_HANDS> _handStates;
 
     // System Performance (cached)
     std::string _performanceSummary;
     std::chrono::steady_clock::time_point _lastPerfUpdate;
+
+    // Model Paths (configurable for lite vs full models)
+    std::string _palmModelPath = "models/palm_detection.onnx";
+    std::string _landmarkModelPath = "models/hand_landmark.onnx";
 };
 
 } // namespace core

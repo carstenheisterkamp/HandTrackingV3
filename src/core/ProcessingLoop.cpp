@@ -112,10 +112,10 @@ void ProcessingLoop::loop() {
             auto handLandmark = std::make_unique<inference::HandLandmark>();
 
             inference::PalmDetector::Config palmConfig;
-            palmConfig.modelPath = "models/palm_detection.onnx";
+            palmConfig.modelPath = _palmModelPath;  // Use configurable path
 
             inference::HandLandmark::Config landmarkConfig;
-            landmarkConfig.modelPath = "models/hand_landmark.onnx";
+            landmarkConfig.modelPath = _landmarkModelPath;  // Use configurable path
 
             // Check if ONNX files exist
             Logger::info("🔍 Checking for ONNX models...");
@@ -127,6 +127,16 @@ void ProcessingLoop::loop() {
 
             Logger::info("   Palm exists: ", palmExists ? "YES" : "NO");
             Logger::info("   Landmark exists: ", landmarkExists ? "YES" : "NO");
+
+            // Log file sizes to verify model type
+            if (palmExists) {
+                auto palmSize = std::filesystem::file_size(palmConfig.modelPath);
+                Logger::info("   Palm model size: ", palmSize / 1024, " KB");
+            }
+            if (landmarkExists) {
+                auto landmarkSize = std::filesystem::file_size(landmarkConfig.modelPath);
+                Logger::info("   Landmark model size: ", landmarkSize / 1024, " KB");
+            }
 
             if (!palmExists || !landmarkExists) {
                 Logger::warn("ONNX models not found!");
@@ -201,6 +211,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         Logger::info("═══ V3 PROCESSING STATS ═══");
         Logger::info("FPS: ", _currentFps);
         Logger::info("Frame: ", frame->width, "x", frame->height);
+        Logger::info("Models: ", getModelType(), " (", _palmModelPath.find("_full") != std::string::npos ? "full models" : "lite models", ")");
         Logger::info("Stereo: ", frame->hasStereoData ? "Available" : "Disabled");
         Logger::info("MJPEG: ", (_mjpegServer && _mjpegServer->hasClients()) ? "Clients connected" : "No clients");
 
@@ -209,7 +220,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
         for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
             Logger::info("   Hand ", h, ":");
             Logger::info("     Position: (", _handStates[h].palmX, ", ", _handStates[h].palmY, ", ", _handStates[h].palmZ, ")");
-            Logger::info("     Velocity: (", _handStates[h].velX, ", ", _handStates[h].velY, ")");
+            Logger::info("     Velocity: (", _handStates[h].velX, ", ", _handStates[h].velY, ", ", _handStates[h].velZ, ")");
             Logger::info("     Gesture: ", _handStates[h].gesture);
         }
         Logger::info("TensorRT: ", _inferenceInitialized ? "Ready" : "Not initialized");
@@ -352,10 +363,47 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     cv::rectangle(debugFrame, cv::Point(bx1, by1), cv::Point(bx2, by2), boxColor, 2);
 
                     // Draw hand label
+                    // Note: Text will be mirrored after frame flip, so we draw it normally here
+                    // Position needs to account for the upcoming flip
                     char labelStr[16];
                     snprintf(labelStr, sizeof(labelStr), "Hand %zu", h);
-                    cv::putText(debugFrame, labelStr, cv::Point(bx1, by1 - 5),
+
+                    // Calculate text size to position it correctly after mirror
+                    int baseline = 0;
+                    cv::Size textSize = cv::getTextSize(labelStr, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseline);
+
+                    // After flip, bx1 will become (frameWidth - bx1)
+                    // We want text at the TOP LEFT of the box, so we draw at TOP RIGHT before flip
+                    int textX = bx2 - textSize.width;  // Right side (will be left after flip)
+                    int textY = by1 - 5;
+
+                    // Draw mirrored text (flip horizontally so it reads correctly after frame flip)
+                    cv::Mat textROI;
+                    cv::Mat textImg = cv::Mat::zeros(textSize.height + baseline, textSize.width, CV_8UC3);
+                    cv::putText(textImg, labelStr, cv::Point(0, textSize.height),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.4, boxColor, 1);
+                    cv::flip(textImg, textImg, 1);  // Flip text horizontally
+
+                    // Place flipped text on frame
+                    int y1 = std::max(0, textY - textSize.height);
+                    int y2 = std::min(debugFrame.rows, textY);
+                    int x1 = std::max(0, textX);
+                    int x2 = std::min(debugFrame.cols, textX + textSize.width);
+
+                    if (y2 > y1 && x2 > x1) {
+                        cv::Mat destROI = debugFrame(cv::Rect(x1, y1, x2 - x1, y2 - y1));
+                        cv::Mat srcROI = textImg(cv::Rect(0, 0, x2 - x1, y2 - y1));
+
+                        // Blend text (white pixels from text)
+                        for (int row = 0; row < srcROI.rows; ++row) {
+                            for (int col = 0; col < srcROI.cols; ++col) {
+                                cv::Vec3b pixel = srcROI.at<cv::Vec3b>(row, col);
+                                if (pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0) {
+                                    destROI.at<cv::Vec3b>(row, col) = pixel;
+                                }
+                            }
+                        }
+                    }
 
                     // Draw landmarks
                     for (size_t i = 0; i < landmarks->landmarks.size(); ++i) {
@@ -446,8 +494,20 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 _handStates[h].palmX = result.palmPosition.x;
                 _handStates[h].palmY = result.palmPosition.y;
                 _handStates[h].palmZ = result.palmPosition.z;
+
+                // Calculate delta (acceleration) from velocity change
+                _handStates[h].deltaX = result.velocity.vx - _handStates[h].prevVelX;
+                _handStates[h].deltaY = result.velocity.vy - _handStates[h].prevVelY;
+                _handStates[h].deltaZ = result.velocity.vz - _handStates[h].prevVelZ;
+
+                // Store current velocity for next frame's delta
+                _handStates[h].prevVelX = result.velocity.vx;
+                _handStates[h].prevVelY = result.velocity.vy;
+                _handStates[h].prevVelZ = result.velocity.vz;
+
                 _handStates[h].velX = result.velocity.vx;
                 _handStates[h].velY = result.velocity.vy;
+                _handStates[h].velZ = result.velocity.vz;
                 _handStates[h].gesture = GestureFSM::getStateName(gesture);
                 _handStates[h].vipLocked = result.vipLocked;
 
@@ -468,6 +528,11 @@ void ProcessingLoop::processFrame(Frame* frame) {
     // Step 3: Send to MJPEG (AFTER drawing detections)
     // ═══════════════════════════════════════════════════════════
     if (shouldRenderDebug && !debugFrame.empty()) {
+        // Mirror camera image horizontally BEFORE drawing overlay
+        // This makes the camera view act like a mirror (natural)
+        // But overlay text remains readable
+        cv::flip(debugFrame, debugFrame, 1);  // 1 = horizontal flip
+
         drawDebugOverlay(debugFrame, frame);
         _mjpegServer->update(debugFrame);
     }
@@ -492,10 +557,57 @@ void ProcessingLoop::processFrame(Frame* frame) {
 }
 
 void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
-    // Semi-transparent status box (larger for 2-hand info with velocity)
-    int boxHeight = 100 + (_lastHandCount > 0 ? _lastHandCount * 75 : 0);
+    // ═══════════════════════════════════════════════════════════
+    // 1. Draw Play Volume (3D Box)
+    // ═══════════════════════════════════════════════════════════
+    // Default volume for Phase 3 (will be configurable in Phase 4)
+    // 16:9 aspect ratio to match camera and game format
+    const float volumeMinX = 0.1f;   // 10% margin left
+    const float volumeMaxX = 0.9f;   // 10% margin right
+    const float volumeMinY = 0.1f;   // 10% margin top
+    const float volumeMaxY = 0.9f;   // 10% margin bottom
+    const float volumeMinZ = 0.0f;   // 0.5m normalized to 0
+    const float volumeMaxZ = 1.0f;   // 2.5m normalized to 1
+
+    // Aspect ratio: X span = 0.8 (80%), Y span = 0.8 (80%)
+    // This creates a ~16:9 volume (camera is 640x360 = 16:9)
+
+    int vx1 = static_cast<int>(volumeMinX * debugFrame.cols);
+    int vx2 = static_cast<int>(volumeMaxX * debugFrame.cols);
+    int vy1 = static_cast<int>(volumeMinY * debugFrame.rows);
+    int vy2 = static_cast<int>(volumeMaxY * debugFrame.rows);
+
+    cv::Scalar volumeColor = cv::Scalar(100, 200, 100);  // Light green
+    cv::rectangle(debugFrame, cv::Point(vx1, vy1), cv::Point(vx2, vy2),
+                  volumeColor, 2, cv::LINE_AA);
+
+    // Corner markers for 3D effect
+    int markerSize = 20;
+    cv::line(debugFrame, cv::Point(vx1, vy1), cv::Point(vx1 + markerSize, vy1), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx1, vy1), cv::Point(vx1, vy1 + markerSize), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx2, vy1), cv::Point(vx2 - markerSize, vy1), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx2, vy1), cv::Point(vx2, vy1 + markerSize), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx1, vy2), cv::Point(vx1 + markerSize, vy2), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx1, vy2), cv::Point(vx1, vy2 - markerSize), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2 - markerSize, vy2), volumeColor, 3);
+    cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2, vy2 - markerSize), volumeColor, 3);
+
+    // Z-Depth indication
+    cv::putText(debugFrame, "PLAY VOLUME (16:9)",
+                cv::Point(vx1 + 10, vy1 + 25),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, volumeColor, 1, cv::LINE_AA);
+    cv::putText(debugFrame, "Z: 0.5m - 2.5m",
+                cv::Point(vx1 + 10, vy1 + 45),
+                cv::FONT_HERSHEY_SIMPLEX, 0.4, volumeColor, 1, cv::LINE_AA);
+
+    // ═══════════════════════════════════════════════════════════
+    // 2. Info Panel (Status Box)
+    // ═══════════════════════════════════════════════════════════
+    // Always show 2 hands (even if not detected) to prevent flickering
+    // Box height: Base (118 = 6 header lines + margin) + per-hand (95 = 4 lines × 18 + margins)
+    int boxHeight = 118 + (MAX_HANDS * 95);  // Fixed height for 2 hands with delta + model info
     cv::Mat overlay = debugFrame.clone();
-    cv::rectangle(overlay, cv::Rect(5, 5, 280, boxHeight), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::rectangle(overlay, cv::Rect(5, 5, 320, boxHeight), cv::Scalar(0, 0, 0), cv::FILLED);
     cv::addWeighted(overlay, 0.6, debugFrame, 0.4, 0, debugFrame);
 
     int y = 22;
@@ -523,41 +635,97 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::putText(debugFrame, trtStatus, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, trtColor, 1);
     y += lineHeight;
 
-    // Hand Detection Status
-    char handStr[64];
-    snprintf(handStr, sizeof(handStr), "Hands: %d", _lastHandCount);
-    cv::Scalar handColor = (_lastHandCount > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
-    cv::putText(debugFrame, handStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, handColor, 1);
+    // Model Type (LITE or FULL)
+    std::string modelType = getModelType();
+    cv::Scalar modelColor = (modelType == "FULL") ? cv::Scalar(255, 165, 0) : cv::Scalar(0, 255, 0);  // Orange for FULL, Green for LITE
+    std::string modelText = "Models: " + modelType;
+    cv::putText(debugFrame, modelText, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, modelColor, 1);
     y += lineHeight;
 
-    // Show details for each detected hand
-    for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
-        const auto& state = _handStates[h];
-        cv::Scalar labelColor = (h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0);
+    // Stereo Status
+    if (_stereoInitialized && frame->hasStereoData) {
+        cv::putText(debugFrame, "Stereo: Active", cv::Point(10, y),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 0), 1);
+    } else {
+        cv::putText(debugFrame, "Stereo: Disabled", cv::Point(10, y),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(128, 128, 128), 1);
+    }
+    y += lineHeight;
 
+    // Hand Detection Status
+    char handStr[64];
+    snprintf(handStr, sizeof(handStr), "Hands Detected: %d / 2", _lastHandCount);
+    cv::Scalar handColor = (_lastHandCount > 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(128, 128, 128);
+    cv::putText(debugFrame, handStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, handColor, 1);
+    y += lineHeight + 5;
+
+    // ═══════════════════════════════════════════════════════════
+    // 3. Hand Details (ALWAYS show both slots)
+    // ═══════════════════════════════════════════════════════════
+    for (int h = 0; h < MAX_HANDS; ++h) {
+        bool detected = (h < _lastHandCount);
+        const auto& state = _handStates[h];
+
+        cv::Scalar labelColor = detected
+            ? ((h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0))
+            : cv::Scalar(80, 80, 80);  // Gray for undetected
+
+        // Hand label
         char labelStr[32];
-        snprintf(labelStr, sizeof(labelStr), "Hand %d:", h);
+        snprintf(labelStr, sizeof(labelStr), "Hand %d: %s", h, detected ? "ACTIVE" : "NOT DETECTED");
         cv::putText(debugFrame, labelStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, labelColor, 1);
         y += lineHeight;
 
-        char posStr[64];
-        snprintf(posStr, sizeof(posStr), "  Pos: (%.2f, %.2f)",
-                 static_cast<double>(state.palmX), static_cast<double>(state.palmY));
-        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 255, 200), 1);
+        // Position (always show, 0,0,0 if not detected)
+        char posStr[80];
+        if (detected) {
+            snprintf(posStr, sizeof(posStr), "  Pos: (%.2f, %.2f, %.2f)",
+                     static_cast<double>(state.palmX),
+                     static_cast<double>(state.palmY),
+                     static_cast<double>(state.palmZ));
+        } else {
+            snprintf(posStr, sizeof(posStr), "  Pos: (0.00, 0.00, 0.00)");
+        }
+        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+                    detected ? cv::Scalar(200, 255, 200) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
-        // Velocity display
-        char velStr[64];
-        snprintf(velStr, sizeof(velStr), "  Vel: (%.2f, %.2f)",
-                 static_cast<double>(state.velX), static_cast<double>(state.velY));
-        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(200, 200, 255), 1);
+        // Velocity (always show, 0,0,0 if not detected)
+        char velStr[80];
+        if (detected) {
+            snprintf(velStr, sizeof(velStr), "  Vel: (%.2f, %.2f, %.2f)",
+                     static_cast<double>(state.velX),
+                     static_cast<double>(state.velY),
+                     static_cast<double>(state.velZ));
+        } else {
+            snprintf(velStr, sizeof(velStr), "  Vel: (0.00, 0.00, 0.00)");
+        }
+        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+                    detected ? cv::Scalar(200, 200, 255) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
-        std::string gestureStr = "  Gesture: " + state.gesture;
-        cv::Scalar gestureColor = (state.gesture != "None" && state.gesture != "Palm")
-            ? cv::Scalar(0, 255, 255) : cv::Scalar(200, 200, 200);
+        // Delta/Acceleration (always show, 0,0,0 if not detected)
+        char deltaStr[80];
+        if (detected) {
+            snprintf(deltaStr, sizeof(deltaStr), "  Delta: (%.2f, %.2f, %.2f)",
+                     static_cast<double>(state.deltaX),
+                     static_cast<double>(state.deltaY),
+                     static_cast<double>(state.deltaZ));
+        } else {
+            snprintf(deltaStr, sizeof(deltaStr), "  Delta: (0.00, 0.00, 0.00)");
+        }
+        cv::putText(debugFrame, deltaStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+                    detected ? cv::Scalar(255, 200, 200) : cv::Scalar(60, 60, 60), 1);
+        y += lineHeight - 4;
+
+        // Gesture
+        std::string gestureStr = detected
+            ? ("  Gesture: " + state.gesture)
+            : "  Gesture: None";
+        cv::Scalar gestureColor = detected && (state.gesture != "None" && state.gesture != "PALM")
+            ? cv::Scalar(0, 255, 255) : cv::Scalar(80, 80, 80);
         cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, gestureColor, 1);
-        y += lineHeight;
+        y += lineHeight + 5;
     }
 
     // System Performance (update every 5s) - bottom of frame
