@@ -101,5 +101,21 @@ inline PlayVolume getFullscreenPlayVolume() {
     return volume;
 }
 
+/**
+ * Game Volume for standing player at 2m distance
+ * Optimized for 220cm × 125cm display
+ * Z-Range: 1.2m (arm extended) - 2.8m (arm at body + margin)
+ */
+inline PlayVolume getGamePlayVolume() {
+    PlayVolume volume;
+    volume.minX = 0.0f;    // Full horizontal range
+    volume.maxX = 1.0f;    // (player uses ~50% center, has margin)
+    volume.minY = 0.0f;    // Full vertical range
+    volume.maxY = 1.0f;    // (player uses ~80%, has margin for tall people)
+    volume.minZ = 1200.0f; // 1.2m - arm fully extended forward
+    volume.maxZ = 2800.0f; // 2.8m - arm at body + margin for movement
+    return volume;
+}
+
 } // namespace core
 

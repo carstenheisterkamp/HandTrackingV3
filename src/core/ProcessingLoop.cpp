@@ -51,12 +51,14 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
     }
     _stereoDepth = std::make_unique<StereoDepth>();
 
-    // Phase 4: Initialize Play Volume (16:9, 0.5m-2.5m)
-    _playVolume = std::make_unique<PlayVolume>(getDefaultPlayVolume());
-    Logger::info("Play Volume initialized: ",
+    // Phase 4: Initialize Play Volume for standing player at 2m
+    // Optimized for 220cm × 125cm display, arm reach coverage
+    _playVolume = std::make_unique<PlayVolume>(getGamePlayVolume());
+    Logger::info("Play Volume initialized (GAME): ",
                  _playVolume->getWidth() * 100, "% x ",
-                 _playVolume->getHeight() * 100, "% (16:9), ",
-                 "Z: ", _playVolume->minZ, "-", _playVolume->maxZ, "mm");
+                 _playVolume->getHeight() * 100, "% coverage, ",
+                 "Z: ", _playVolume->minZ, "-", _playVolume->maxZ, "mm (",
+                 _playVolume->minZ / 1000.0f, "m-", _playVolume->maxZ / 1000.0f, "m)");
 
     // Note: TensorRT initialization moved to initInference()
     // Called lazily to not block startup
@@ -632,12 +634,12 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2, vy2 - markerSize), volumeColor, 3);
 
     // Z-Depth indication and filter status
-    cv::putText(debugFrame, "PLAY VOLUME (16:9) - ACTIVE",
+    cv::putText(debugFrame, "GAME VOLUME (FULLSCREEN) - ACTIVE",
                 cv::Point(vx1 + 10, vy1 + 25),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, volumeColor, 1, cv::LINE_AA);
 
     char depthStr[64];
-    snprintf(depthStr, sizeof(depthStr), "Z: %.1fm - %.1fm (Filtering ON)",
+    snprintf(depthStr, sizeof(depthStr), "Z: %.1fm - %.1fm (Standing @ 2m)",
              _playVolume->minZ / 1000.0f, _playVolume->maxZ / 1000.0f);
     cv::putText(debugFrame, depthStr,
                 cv::Point(vx1 + 10, vy1 + 45),

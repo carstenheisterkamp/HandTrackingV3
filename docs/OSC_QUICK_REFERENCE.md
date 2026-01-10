@@ -127,7 +127,23 @@ Stabiles Single-User-Tracking für Gaming:
 |-------|-------|-----------|---------|
 | X | 0.0-1.0 | Links → Rechts | Normalized |
 | Y | 0.0-1.0 | Oben → Unten | Normalized |
-| Z | 0.0-1.0 | 0.5m nah → 3m fern | Normalized |
+| Z | 0.0-1.0 | 1.2m nah → 2.8m fern | Normalized |
+
+**Z-Koordinate für stehendes Spielen:**
+- **1.2m** = Arm voll ausgestreckt nach vorne
+- **2.0m** = Ideale Spieler-Position (Display-Abstand)
+- **2.8m** = Arm am Körper + Bewegungsfreiheit
+
+**OSC Z-Berechnung:**
+```
+Z_normalized = (Z_mm - 1200) / (2800 - 1200)
+             = (Z_mm - 1200) / 1600
+
+Beispiele:
+  1.2m (1200mm) → Z = 0.0 (Arm ausgestreckt)
+  2.0m (2000mm) → Z = 0.5 (Spieler-Position)
+  2.8m (2800mm) → Z = 1.0 (Arm am Körper)
+```
 
 **Velocity:** 
 - mm/s (millimeter pro Sekunde)
