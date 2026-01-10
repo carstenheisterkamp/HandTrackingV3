@@ -11,15 +11,15 @@
 **Implementiert (2026-01-10):**
 - ✅ Stereo Depth am Palm Center
 - ✅ Z-Koordinate in OSC Output
-- ✅ Debug Overlay mit Volume, Delta, Z-Werten
+- ✅ Debug Overlay mit Volume (16:9), Delta, Z-Werten
 - ✅ Gesten-Thresholds optimiert (FIVE/FIST verbessert)
+- ✅ FULL Models aktiviert (bessere Accuracy @ 30 FPS)
+- ✅ Preview gespiegelt (Mirror-View, Text lesbar)
+- ✅ OSC Dokumentation konsolidiert (nur Unreal Engine C++)
 
 **TODO:**
 - ⬜ **TEST auf Jetson:** Tiefenwerte bei 50cm, 100cm, 150cm verifizieren
 - ⬜ **TEST:** Gesten-Erkennung (FIVE vs FOUR, FIST bei 2 Händen)
-- ⬜ **OPTIONAL:** Full Models testen (bessere Accuracy vs FPS)
-  - Siehe `MODEL_TESTING.md` für Anleitung
-  - Umschalten via `USE_FULL_MODELS` Flag in main.cpp
 - ⬜ Bei Bedarf: Device-Kalibrierung laden (statt Default)
 - ⬜ Bei Bedarf: Rectification Maps für bessere Stereo-Accuracy
 
@@ -64,13 +64,16 @@
 
 **Design:** `PLAYER_LOCK_DESIGN.md` ✅
 
-| Komponente | Status |
-|------------|--------|
-| 3D Play Volume Filter | ⬜ |
-| Face-Anchored Tracking | ⬜ |
-| Session FSM (IDLE/ACTIVE/LOST) | ⬜ |
-| OSC Events (/player/*) | ⬜ |
-| Multi-Person Ignoring | ⬜ |
+| Komponente | Status | Details |
+|------------|--------|---------|
+| 3D Play Volume (16:9) | 🎨 Visualisiert | Preview zeigt Box, Filter noch nicht aktiv |
+| Volume Filtering Logic | ⬜ | Hand-Detection innerhalb Volume |
+| Face-Anchored Tracking | ⬜ | Haar Cascade Hand-zu-Gesicht |
+| Session FSM (IDLE/ACTIVE/LOST) | ⬜ | State Machine für Player Session |
+| OSC Events (/player/*) | ⬜ | enter/active/lost/exit Events |
+| Multi-Person Ignoring | ⬜ | Ignoriere Personen außerhalb Volume |
+
+**Hinweis:** Play Volume Box wird bereits im Preview angezeigt (grün, 16:9), aber das Volume-Filtering ist noch nicht aktiv. Alle Hände werden aktuell erkannt, unabhängig von der Box.
 
 **Priorität:** Nach Phase 3 Testing
 
