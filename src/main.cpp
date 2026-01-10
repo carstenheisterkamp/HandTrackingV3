@@ -33,7 +33,7 @@ int main() {
     }
 
     // Configuration Constants
-    const std::string OSC_HOST = "127.0.0.1";
+    const std::string OSC_HOST = "100.86.141.97";  // MacBook via Tailscale for testing
     const std::string OSC_PORT = "9000";
 
     // ═══════════════════════════════════════════════════════════

@@ -141,6 +141,57 @@ Stabiles Single-User-Tracking für Gaming:
 
 ---
 
+## 📏 Physisches Setup & Play Volume
+
+### Kamera-Setup
+- **Position:** Auf Stativ unter Display/Projektionsfläche
+- **Höhe:** Ca. gleiche Distanz zum Player wie Display
+- **Ausrichtung:** Frontal auf Spieler gerichtet
+
+### Play Volume (3D Bereich)
+**Default-Konfiguration (90%):**
+- **Horizontal (X):** 90% der Kamera-Breite (5% Margin links/rechts)
+- **Vertikal (Y):** 90% der Kamera-Höhe (5% Margin oben/unten)
+- **Tiefe (Z):** 0.5m - 2.5m von der Kamera
+
+### Boden-Markierung für Play Volume
+
+**Berechnung der Bodenfläche:**
+
+Bei **127° FoV** (OAK-D Pro) und Kamera auf Display-Höhe:
+
+| Abstand | Breite (ca.) | Höhe (ca.) | Play Volume 90% |
+|---------|--------------|------------|-----------------|
+| 0.5m | 0.8m | 0.45m | 0.72m × 0.40m |
+| 1.0m | 1.6m | 0.9m | 1.44m × 0.81m |
+| 1.5m | 2.4m | 1.35m | 2.16m × 1.22m |
+| 2.0m | 3.2m | 1.8m | 2.88m × 1.62m |
+| 2.5m | 4.0m | 2.25m | 3.60m × 2.03m |
+
+**Empfohlene Markierung auf dem Boden:**
+```
+Nähere Linie (0.5m):  ~0.7m × 0.4m Rechteck
+Fernere Linie (2.5m): ~3.6m × 2.0m Rechteck
+
+         Kamera/Display
+              ↓
+    ┌─────────────────────┐
+    │ ← 0.7m breit →     │  0.5m Entfernung
+    └─────────────────────┘
+           ▼ ▼ ▼
+    ┌─────────────────────────────┐
+    │  ← 3.6m breit →            │  2.5m Entfernung
+    └─────────────────────────────┘
+```
+
+**Praktischer Tipp:**
+- Markiere mit Klebeband ein **Rechteck 2m × 1.5m** auf dem Boden
+- Zentrumslinie bei ca. 1.5m von der Kamera
+- Das gibt Spielern visuelles Feedback für optimale Position
+- Entspricht dem **Sweet Spot** für beste Tracking-Qualität
+
+---
+
 ## 🎮 Game Engine Integration (Unreal Engine)
 
 ### Koordinaten-Transformation: OSC → Unreal Engine
@@ -390,15 +441,15 @@ Data: [0]  # player_id
 ## ⚙️ Verbindung & Setup
 
 ### Connection Details
-- **IP:** 100.101.16.21 (via Tailscale)
+- **IP:** 100.86.141.97 (MacBook via Tailscale - Testing)
 - **Port:** 9000
 - **Protocol:** OSC/UDP
 - **Rate:** 30 Hz konstant
 - **Latenz:** <60ms Glass-to-OSC
 
-**Wichtig für Unreal Engine:**
-- OSC Plugin muss aktiviert sein
-- Jetson sendet via UDP Broadcast
+**Test Setup:**
+- Jetson sendet OSC an MacBook für Testing
+- Später: Ändern zu Unreal Engine IP oder zurück zu localhost
 - Keine Authentifizierung nötig
 - Fire-and-Forget (keine ACKs)
 
