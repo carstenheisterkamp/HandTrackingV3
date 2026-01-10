@@ -1,6 +1,7 @@
 #include "core/GestureFSM.hpp"
 #include "core/Logger.hpp"
 #include <cmath>
+#include <map>
 
 namespace core {
 
@@ -148,15 +149,15 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     int fingerCount = (thumbUp ? 1 : 0) + (indexUp ? 1 : 0) +
                       (middleUp ? 1 : 0) + (ringUp ? 1 : 0) + (pinkyUp ? 1 : 0);
 
-    // Debug log (every 60 frames)
-    static int debugCounter = 0;
-    if (++debugCounter % 60 == 1) {
+    // Debug log (every 30 frames per hand, not shared)
+    // Use object pointer to create unique counter per hand
+    static std::map<const GestureFSM*, int> debugCounters;
+    if (++debugCounters[this] % 30 == 1) {
         // Calculate hand size for debug output
         float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
-        Logger::info("🖐 Gesture (Y-based): T=", thumbUp, " I=", indexUp,
+        Logger::info("🖐 Gesture [", (isRightHand ? "R" : "L"), "]: T=", thumbUp, " I=", indexUp,
                      " M=", middleUp, " R=", ringUp, " P=", pinkyUp,
-                     " count=", fingerCount, " hand=", (isRightHand ? "R" : "L"),
-                     " size=", handSize);
+                     " count=", fingerCount, " size=", handSize);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -168,7 +169,6 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     if (!thumbUp && !indexUp && !middleUp && !ringUp && !pinkyUp) {
         // Additional verification: Tips should be close to palm (wrist)
         // This prevents false FIST when fingers are pointing sideways
-        using LI = LandmarkIndices;
         const auto& wrist = landmarks[LI::WRIST];
         const auto& middleMcp = landmarks[LI::MIDDLE_MCP];
         float handSize = distance2D(wrist, middleMcp);
@@ -183,12 +183,28 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
                             (middleTipDist < handSize * 1.5f);
 
         // Accept FIST even if curl check fails (to handle edge cases)
-        // but log when curl check helps
-        if (!fingersCurled && debugCounter % 60 == 1) {
-            Logger::info("🖐 FIST: Fingers not curled enough, but accepting (tips far from palm)");
-        }
 
         return GestureState::Fist;
+    }
+
+    // FIVE: All 5 fingers up 🖐️ - CHECK BEFORE FOUR!
+    // This is critical - FIVE must be checked before FOUR
+    if (thumbUp && indexUp && middleUp && ringUp && pinkyUp) {
+        // Check for VULCAN (spread between middle and ring)
+        if (isVulcanSpread(landmarks)) {
+            return GestureState::Vulcan;
+        }
+        return GestureState::Five;
+    }
+
+    // LENIENT FALLBACK: If 4+ fingers detected but strict check failed, still return FIVE
+    if (fingerCount >= 4 && !thumbUp) {
+        // Probably FOUR (all except thumb)
+        return GestureState::Four;
+    }
+    if (fingerCount >= 5) {
+        // 5 fingers detected, even if thresholds say otherwise
+        return GestureState::Five;
     }
 
     // THUMBS_UP: Only thumb up 👍
@@ -202,7 +218,12 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     }
 
     // MIDDLE_FINGER: Only middle up 🖕
+    // Make this more lenient - accept if middle is highest finger
     if (!thumbUp && !indexUp && middleUp && !ringUp && !pinkyUp) {
+        return GestureState::MiddleFinger;
+    }
+    // LENIENT: If only middle finger significantly above others
+    if (!thumbUp && fingerCount == 1 && middleUp) {
         return GestureState::MiddleFinger;
     }
 
@@ -241,22 +262,37 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
         return GestureState::Four;
     }
 
-    // FIVE: All 5 fingers up 🖐️
-    if (thumbUp && indexUp && middleUp && ringUp && pinkyUp) {
-        // Check for VULCAN (spread between middle and ring)
-        if (isVulcanSpread(landmarks)) {
-            return GestureState::Vulcan;
-        }
-        return GestureState::Five;
-    }
 
     // ═══════════════════════════════════════════════════════════
     // Fallback: Count-based detection for ambiguous cases
     // ═══════════════════════════════════════════════════════════
 
+    // Lenient count-based fallbacks
     if (fingerCount >= 5) return GestureState::Five;
-    if (fingerCount == 4) return GestureState::Four;
+    if (fingerCount == 4) {
+        // Could be FOUR or FIVE with thumb barely down
+        // Check thumb status
+        return thumbUp ? GestureState::Five : GestureState::Four;
+    }
     if (fingerCount == 0) return GestureState::Fist;
+    if (fingerCount == 1) {
+        // One finger up - could be POINTING, MIDDLE_FINGER, or THUMBS_UP
+        if (indexUp) return GestureState::Pointing;
+        if (middleUp) return GestureState::MiddleFinger;
+        if (thumbUp) return GestureState::ThumbsUp;
+    }
+    if (fingerCount == 2) {
+        // Two fingers - check which ones
+        if (indexUp && middleUp) return GestureState::Peace;
+        if (indexUp && pinkyUp) return GestureState::Metal;
+        if (thumbUp && indexUp) return GestureState::Two;
+        if (thumbUp && pinkyUp) return GestureState::CallMe;
+    }
+    if (fingerCount == 3) {
+        // Three fingers
+        if (thumbUp && indexUp && middleUp) return GestureState::Three;
+        if (thumbUp && indexUp && pinkyUp) return GestureState::LoveYou;
+    }
 
     // Ambiguous - return current state to avoid flicker
     return state_;
@@ -279,19 +315,16 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
 
     const auto& tip = landmarks[tipIdx];
     const auto& pip = landmarks[pipIdx];
+    const auto& mcp = landmarks[tipIdx - 3];  // MCP is 3 indices before TIP
 
-    // Dynamic threshold based on hand size for better multi-distance support
-    // Get hand size (wrist to middle MCP distance)
-    using LI = LandmarkIndices;
-    float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
+    // ULTRA LENIENT: Use MCP instead of PIP for much larger range
+    // This makes detection work even when hand is tilted or at angle
+    // Extended finger: tip is above MCP
+    // Curled finger: tip is at or below MCP
 
-    // VERY LENIENT: Accept finger as "up" if tip is even slightly above PIP
-    // Use only 2% of hand size as minimum separation
-    float threshold = handSize * 0.02f;
-    threshold = std::clamp(threshold, 0.002f, 0.01f);  // Very small threshold
-
-    // Tip must be higher than PIP
-    return tip.y < pip.y - threshold;
+    // Use MCP comparison for more reliable detection
+    // No threshold - just direct comparison
+    return tip.y < mcp.y;
 }
 
 bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
@@ -304,20 +337,18 @@ bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& l
 
     using LI = LandmarkIndices;
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
-    const auto& thumbIP = landmarks[LI::THUMB_IP];
+    const auto& thumbMCP = landmarks[LI::THUMB_MCP];  // Use MCP instead of IP for larger range
 
-    // IMPROVED: More lenient threshold for better FIST detection
-    // Dynamic threshold based on hand size
-    float handSize = distance2D(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
-    float threshold = handSize * 0.10f;  // Reduced from 12% to 10%
-    threshold = std::clamp(threshold, 0.008f, 0.025f);  // Wider range
+    // ULTRA LENIENT: Just check direction, no threshold
+    // This makes FIST vs THUMBS_UP much more reliable
 
     if (isRightHand) {
-        // Right hand: extended thumb has tip to the LEFT of IP
-        return thumbTip.x < thumbIP.x - threshold;
+        // Right hand: extended thumb has tip to the LEFT of MCP
+        // No threshold - just direction check
+        return thumbTip.x < thumbMCP.x;
     } else {
-        // Left hand: extended thumb has tip to the RIGHT of IP
-        return thumbTip.x > thumbIP.x + threshold;
+        // Left hand: extended thumb has tip to the RIGHT of MCP
+        return thumbTip.x > thumbMCP.x;
     }
 }
 

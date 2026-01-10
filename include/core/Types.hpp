@@ -43,7 +43,7 @@ constexpr float KALMAN_LOOKAHEAD_S = 0.033f; // +1 frame prediction (~33ms)
 // V3: Gesture Configuration
 constexpr float PINCH_THRESHOLD_ENTER = 0.08f;  // 8% of hand size
 constexpr float PINCH_THRESHOLD_EXIT = 0.12f;   // 12% - hysteresis gap
-constexpr int GESTURE_DEBOUNCE_FRAMES = 3;      // ~50ms @ 60fps
+constexpr int GESTURE_DEBOUNCE_FRAMES = 1;      // Instant recognition (no debounce)
 
 // V3: OSC Configuration
 constexpr int OSC_RATE_HZ = 30;
