@@ -121,29 +121,60 @@ Stabiles Single-User-Tracking für Gaming:
 
 ---
 
-## 📐 Koordinatensystem
+## 📐 Koordinatensystem & Physisches Referenz-Volumen
 
-| Achse | Range | Bedeutung | Einheit |
-|-------|-------|-----------|---------|
-| X | 0.0-1.0 | Links → Rechts | Normalized |
-| Y | 0.0-1.0 | Oben → Unten | Normalized |
-| Z | 0.0-1.0 | 1.2m nah → 2.8m fern | Normalized |
+### 🎯 Normalisierungs-Basis: Game Volume (Physische Referenz)
 
-**Z-Koordinate für stehendes Spielen:**
-- **1.2m** = Arm voll ausgestreckt nach vorne
-- **2.0m** = Ideale Spieler-Position (Display-Abstand)
-- **2.8m** = Arm am Körper + Bewegungsfreiheit
+**WICHTIG:** Die Normalisierung (0.0-1.0) bezieht sich auf ein **definiertes physisches Volumen**!
 
-**OSC Z-Berechnung:**
+**Unser Game Volume (Code: `include/core/PlayVolume.hpp`):**
+```cpp
+// Physisches Referenz-Volumen für Normalisierung
+PlayVolume {
+    // X/Y: Kamera Field-of-View @ 2m Spieler-Abstand
+    minX = 0.0f;     // 100% Kamera-Breite
+    maxX = 1.0f;     // → ~3.2m physisch @ 2m
+    minY = 0.0f;     // 100% Kamera-Höhe  
+    maxY = 1.0f;     // → ~1.8m physisch @ 2m
+    
+    // Z: Definierter Tiefenbereich (Stereo Depth)
+    minZ = 1200mm;   // 1.2m von Kamera (Arm ausgestreckt)
+    maxZ = 2800mm;   // 2.8m von Kamera (Arm am Körper)
+}
 ```
+
+**Das bedeutet konkret:**
+
+| Achse | OSC 0-1 | Physisches Referenz-Volumen | Bei 2m Spieler-Abstand |
+|-------|---------|----------------------------|------------------------|
+| **X** | 0.0-1.0 | 100% Kamera FoV horizontal | ~3.2m Breite (127° FoV) |
+| **Y** | 0.0-1.0 | 100% Kamera FoV vertikal | ~1.8m Höhe (nach 16:9) |
+| **Z** | 0.0-1.0 | 1.2m - 2.8m absolut | 1.6m Tiefenbereich |
+
+### Normalisierungs-Formeln
+
+```cpp
+// X/Y: Kamera-basiert (abhängig von FoV und Abstand)
+X_normalized = X_pixel / ImageWidth;   // 0-640px → 0-1
+Y_normalized = Y_pixel / ImageHeight;  // 0-360px → 0-1
+
+// Z: Tiefenbereich-basiert (fest definiert)
 Z_normalized = (Z_mm - 1200) / (2800 - 1200)
              = (Z_mm - 1200) / 1600
 
-Beispiele:
-  1.2m (1200mm) → Z = 0.0 (Arm ausgestreckt)
+// Beispiele:
+  1.2m (1200mm) → Z = 0.0 (minZ, Arm ausgestreckt)
   2.0m (2000mm) → Z = 0.5 (Spieler-Position)
-  2.8m (2800mm) → Z = 1.0 (Arm am Körper)
+  2.8m (2800mm) → Z = 1.0 (maxZ, Arm am Körper)
 ```
+
+### OSC Output (Normalisiert auf Referenz-Volumen)
+
+| Achse | Range | Bedeutung | Physische Referenz |
+|-------|-------|-----------|-------------------|
+| X | 0.0-1.0 | Links → Rechts | 0 = linker Bildrand, 1 = rechter Bildrand |
+| Y | 0.0-1.0 | Oben → Unten | 0 = oberer Bildrand, 1 = unterer Bildrand |
+| Z | 0.0-1.0 | Nah → Fern | 0 = 1.2m (minZ), 1 = 2.8m (maxZ) |
 
 **Velocity:** 
 - mm/s (millimeter pro Sekunde)
@@ -210,26 +241,82 @@ Fernere Linie (2.5m): ~3.6m × 2.0m Rechteck
 
 ## 🎮 Game Engine Integration (Unreal Engine)
 
-### 🎯 Konzept: Normalisierte Koordinaten → Flexible Volumina
+### 🎯 Konzept: Zwei-Stufen-Mapping
 
-**OSC sendet normalisierte Koordinaten (0.0 - 1.0):**
-- Unabhängig von physischen Dimensionen
-- Flexibles Mapping auf beliebige virtuelle Größen
-- **1m physisch kann 100m virtuell sein** oder jede andere Größe!
+**Stufe 1: Physisch → Normalisiert (auf Jetson)**
+```
+Physisches Game Volume (fest definiert):
+├─ X: 0-3.2m Breite (Kamera FoV @ 2m)
+├─ Y: 0-1.8m Höhe (Kamera FoV @ 2m)  
+└─ Z: 1.2m-2.8m Tiefe (definierter Range)
+
+        ↓ Normalisierung (0-1)
+
+OSC Output (dimensionslos):
+├─ X: 0.0 - 1.0
+├─ Y: 0.0 - 1.0
+└─ Z: 0.0 - 1.0
+```
+
+**Stufe 2: Normalisiert → Virtuell (in Unreal Engine)**
+```
+OSC (dimensionslos):
+├─ X: 0.0 - 1.0
+├─ Y: 0.0 - 1.0
+└─ Z: 0.0 - 1.0
+
+        ↓ Skalierung (beliebig!)
+
+Virtuelles UE Volume (frei wählbar):
+├─ X: 0 - 10m   (oder 100m, oder 1cm...)
+├─ Y: 0 - 20m   (oder 200m, oder 2cm...)
+└─ Z: 0 - 5m    (oder 50m, oder 5cm...)
+```
+
+**Warum zwei Stufen?**
+
+✅ **Jetson-seitig:**
+- Definiertes physisches Referenz-Volumen (Game Volume)
+- Stabile Kalibrierung (1.2m-2.8m bleibt konstant)
+- Unabhängig von Game Engine
+
+✅ **Game Engine-seitig:**
+- Freie Skalierung ohne Re-Kalibrierung
+- Gleiche OSC-Daten für verschiedene Spiele
+- 1m physisch = X m virtuell (X frei wählbar!)
 
 **Beispiel:**
 ```
-Physischer Raum (Game Volume):
-├─ X: 0-1 normalized → ~3.2m breit @ 2m
-├─ Y: 0-1 normalized → ~1.8m hoch @ 2m
-└─ Z: 0-1 normalized → 1.2m-2.8m Tiefe (1.6m range)
+Physisch (Jetson):
+  Hand bewegt sich von 1.2m zu 2.8m (1.6m Bewegung)
+  → OSC sendet Z: 0.0 → 1.0
 
-Virtuelles UE Volume (frei skalierbar):
-├─ X: 0-1 → 1000cm (10m) virtuell
-├─ Y: 0-1 → 2000cm (20m) virtuell
-└─ Z: 0-1 → 500cm (5m) virtuell
+Virtuell (UE Game A):
+  VolumeSize = 160cm → Hand bewegt sich 1.6m (1:1)
 
-→ 1.6m physische Tiefe = 5m virtuelle Tiefe (3.1x Skalierung!)
+Virtuell (UE Game B):
+  VolumeSize = 1600cm → Hand bewegt sich 16m (10:1)
+
+Virtuell (UE Game C):
+  VolumeSize = 16cm → Hand bewegt sich 16cm (1:10)
+```
+
+### Koordinaten-Transformation: Flexibles Volume-Mapping
+
+**OSC sendet normalisierte Koordinaten (0.0 - 1.0):**
+- Bezogen auf **physisches Game Volume** (Jetson-seitig definiert)
+- Unabhängig von virtuellen Dimensionen
+- Flexibles Mapping auf **beliebige virtuelle Größen**
+- **1m physisch kann 100m virtuell sein** oder jede andere Größe!
+
+**Mapping-Formel:**
+```cpp
+// OSC (0-1) → Physisches Referenz → Virtuelles Volume
+Virtual_Position = VolumeOrigin + (OSC_Value * VirtualVolumeSize)
+
+// Beispiel Z-Achse:
+// OSC Z=0.5 → 50% von 1.6m physisch = 0.8m + 1.2m = 2.0m real
+// → 50% von VirtualVolumeSize in UE
 ```
 
 ### Koordinaten-Transformation: Flexibles Volume-Mapping
