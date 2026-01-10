@@ -761,13 +761,15 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
                     detected ? cv::Scalar(255, 200, 200) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
-        // Gesture
-        std::string gestureStr = detected
-            ? ("  Gesture: " + state.gesture)
-            : "  Gesture: None";
-        cv::Scalar gestureColor = detected && (state.gesture != "None" && state.gesture != "PALM")
-            ? cv::Scalar(0, 255, 255) : cv::Scalar(80, 80, 80);
-        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, gestureColor, 1);
+        // Gesture name (always show)
+        char gestureStr[64];
+        if (detected) {
+            snprintf(gestureStr, sizeof(gestureStr), "  Gesture: %s", state.gesture.c_str());
+        } else {
+            snprintf(gestureStr, sizeof(gestureStr), "  Gesture: None");
+        }
+        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+                    detected ? cv::Scalar(0, 255, 255) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight + 5;
     }
 

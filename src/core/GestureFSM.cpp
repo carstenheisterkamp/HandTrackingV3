@@ -158,6 +158,15 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
         Logger::info("🖐 Gesture [", (isRightHand ? "R" : "L"), "]: T=", thumbUp, " I=", indexUp,
                      " M=", middleUp, " R=", ringUp, " P=", pinkyUp,
                      " count=", fingerCount, " size=", handSize);
+
+        // EXTRA DEBUG: If 4 fingers detected but not FIVE, log why
+        if (fingerCount == 4 && !thumbUp) {
+            Logger::warn("   ⚠️  FIVE shown but detected as FOUR - Thumb not detected!");
+            Logger::warn("      Check thumb position - is it visible and extended?");
+        }
+        if (fingerCount == 5 && thumbUp) {
+            Logger::info("   ✅ FIVE correctly detected - all fingers up!");
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -329,27 +338,40 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
 
 bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
                             bool isRightHand) const {
-    // Thumb is special: Uses X-position instead of Y
-    // because thumb extends sideways, not upward
+    // IMPROVED THUMB DETECTION for FIVE gesture
+    // Problem: When hand is frontal to camera (FIVE gesture),
+    // thumb extends FORWARD (Z-direction), not sideways (X-direction)
     //
-    // For RIGHT hand: Thumb tip should be LEFT of thumb IP (smaller X)
-    // For LEFT hand: Thumb tip should be RIGHT of thumb IP (larger X)
+    // Solution: Check if thumb is AWAY from palm (extended vs curled)
+    // This works for ALL hand orientations!
 
     using LI = LandmarkIndices;
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
-    const auto& thumbMCP = landmarks[LI::THUMB_MCP];  // Use MCP instead of IP for larger range
+    const auto& thumbIP = landmarks[LI::THUMB_IP];
+    const auto& thumbMCP = landmarks[LI::THUMB_MCP];
+    const auto& indexMCP = landmarks[LI::INDEX_MCP];
+    const auto& pinkyMCP = landmarks[LI::PINKY_MCP];
 
-    // ULTRA LENIENT: Just check direction, no threshold
-    // This makes FIST vs THUMBS_UP much more reliable
+    // Calculate "palm center" from knuckles
+    float palmCenterX = (indexMCP.x + pinkyMCP.x) / 2.0f;
+    float palmCenterY = (indexMCP.y + pinkyMCP.y) / 2.0f;
 
-    if (isRightHand) {
-        // Right hand: extended thumb has tip to the LEFT of MCP
-        // No threshold - just direction check
-        return thumbTip.x < thumbMCP.x;
-    } else {
-        // Left hand: extended thumb has tip to the RIGHT of MCP
-        return thumbTip.x > thumbMCP.x;
-    }
+    // Distance from thumb tip to palm center
+    float thumbTipToPalmDist = std::sqrt(
+        std::pow(thumbTip.x - palmCenterX, 2) +
+        std::pow(thumbTip.y - palmCenterY, 2)
+    );
+
+    // Distance from thumb MCP to palm center (base of thumb)
+    float thumbMCPToPalmDist = std::sqrt(
+        std::pow(thumbMCP.x - palmCenterX, 2) +
+        std::pow(thumbMCP.y - palmCenterY, 2)
+    );
+
+    // Extended thumb: Tip is FURTHER from palm than MCP
+    // Curled thumb (FIST): Tip is CLOSER to palm than MCP
+    // This works regardless of hand orientation!
+    return thumbTipToPalmDist > thumbMCPToPalmDist * 0.8f;  // 80% threshold = very lenient
 }
 
 bool GestureFSM::isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
