@@ -50,14 +50,19 @@
 |------------|--------|---------|
 | Pipeline: Mono L/R | ✅ | enableStereo=true aktiviert |
 | StereoDepth Class | ✅ | Punktuelle Messung am Palm |
-| Z-Koordinate Output | ✅ | In OSC /hand/{id}/palm |
-| Debug Overlay | ✅ | Volume + Delta + Z-Werte |
-| Gesten-Optimierung | ✅ | FIVE/FIST Thresholds verbessert |
+| Z-Koordinate Output | ✅ | In OSC /hand/{id}/palm [x,y,z] |
+| Debug Overlay | ✅ | Volume (16:9) + Delta + Z-Werte |
+| Gesten-Optimierung | ✅ | FIVE/FIST Thresholds verbessert (5% statt 10%) |
+| Model Testing | ✅ | FULL Models @ 30 FPS (besser als LITE) |
+| Preview Mirror | ✅ | Kamera gespiegelt, Text lesbar |
+| Bounding Box Text | ✅ | Text horizontal gespiegelt für Lesbarkeit |
 
 **Ausstehend:**
-- ⬜ Testen bei 50cm, 100cm, 150cm
+- ⬜ Testen bei 50cm, 100cm, 150cm (remote dev blockiert)
 - ⬜ Optional: Device-Kalibrierung laden
 - ⬜ Optional: Rectification Maps
+
+**Ergebnis:** Code komplett, wartet auf Testing vor Ort
 
 ### 📋 Phase 4: Player Lock System (Design Ready)
 **Ziel:** Stabiles Single-User Gaming

@@ -141,35 +141,189 @@ Stabiles Single-User-Tracking für Gaming:
 
 ---
 
-## 🎮 Game Engine Integration
+## 🎮 Game Engine Integration (Unreal Engine)
 
-### Unreal Engine Mapping
+### Koordinaten-Transformation: OSC → Unreal Engine
 
 ```cpp
-// OSC → UE Koordinaten
-Hand.Location.X = OSC_Z * 300.0f;      // Tiefe (cm)
-Hand.Location.Y = OSC_X * 800.0f;      // Horizontal (cm)
-Hand.Location.Z = (1.0f - OSC_Y) * 600.0f; // Vertikal invertiert (cm)
+// OSC → UE World Space (cm)
+Hand.Location.X = OSC_Z * 300.0f;          // Tiefe: 0-3m → 0-300cm
+Hand.Location.Y = OSC_X * 800.0f;          // Horizontal: 0-1 → 0-800cm
+Hand.Location.Z = (1.0f - OSC_Y) * 600.0f; // Vertikal: 0-1 → 600-0cm (invertiert)
 
-// Velocity mit Scaling
-Hand.Velocity.X = OSC_VZ * velocityScale;
-Hand.Velocity.Y = OSC_VX * velocityScale;
-Hand.Velocity.Z = -OSC_VY * velocityScale;
+// Velocity Transformation (mm/s → cm/s)
+Hand.Velocity.X = OSC_VZ * 0.1f;  // Tiefe
+Hand.Velocity.Y = OSC_VX * 0.1f;  // Horizontal
+Hand.Velocity.Z = -OSC_VY * 0.1f; // Vertikal (invertiert)
 ```
 
-### Unity Mapping
+**Warum Z invertiert?**
+- OSC Y-Koordinate: `0.0 = oben, 1.0 = unten` (Bildschirm-Koordinaten)
+- Unreal Z-Koordinate: `0 = unten, höher = oben` (World Space)
+- `(1.0f - OSC_Y)` spiegelt die Achse: oben (0) → oben (600), unten (1) → unten (0)
 
-```csharp
-// OSC → Unity Koordinaten
-transform.position = new Vector3(
-    OSC_X * 8f - 4f,     // -4 bis +4 (center)
-    (1f - OSC_Y) * 6f,   // 0 bis +6 (invertiert)
-    OSC_Z * 3f + 0.5f    // +0.5 bis +3.5
-);
+### OSC Empfang in Unreal (C++)
 
-// Velocity (mm/s → m/s)
-velocity = new Vector3(OSC_VX, -OSC_VY, OSC_VZ) / 1000f;
+**1. OSC Plugin aktivieren:**
+- Plugins → OSC → Enable
+- Project Settings → Plugins → OSC
+
+**2. OSC Server Component hinzufügen:**
+
+```cpp
+// YourActor.h
+#include "OSCServer.h"
+#include "OSCMessage.h"
+
+UCLASS()
+class YOURGAME_API AHandTracker : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    AHandTracker();
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OSC")
+    FString OSCAddress = TEXT("100.101.16.21");
+    
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OSC")
+    int32 OSCPort = 9000;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Hand Tracking")
+    FVector Hand0Position;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Hand Tracking")
+    FVector Hand0Velocity;
+    
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Hand Tracking")
+    FString Hand0Gesture;
+
+protected:
+    virtual void BeginPlay() override;
+    
+private:
+    UPROPERTY()
+    UOSCServer* OSCServer;
+    
+    UFUNCTION()
+    void OnPalmReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port);
+    
+    UFUNCTION()
+    void OnVelocityReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port);
+    
+    UFUNCTION()
+    void OnGestureReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port);
+};
 ```
+
+**3. OSC Message Handler implementieren:**
+
+```cpp
+// YourActor.cpp
+void AHandTracker::BeginPlay()
+{
+    Super::BeginPlay();
+    
+    // Create OSC Server
+    OSCServer = NewObject<UOSCServer>(this);
+    OSCServer->Listen(OSCAddress, OSCPort);
+    
+    // Bind OSC Addresses
+    FOSCAddress PalmAddress;
+    PalmAddress.PushContainer("hand");
+    PalmAddress.PushContainer("0");
+    PalmAddress.PushMethod("palm");
+    OSCServer->BindEventToOnOSCAddressPatternMatchesPath(PalmAddress, 
+        FOnOSCMessageReceived::CreateUObject(this, &AHandTracker::OnPalmReceived));
+    
+    // Repeat for velocity and gesture...
+}
+
+void AHandTracker::OnPalmReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+{
+    if (Message.GetArguments().Num() >= 3)
+    {
+        float OSC_X = Message.GetArguments()[0].GetFloat();
+        float OSC_Y = Message.GetArguments()[1].GetFloat();
+        float OSC_Z = Message.GetArguments()[2].GetFloat();
+        
+        // Transform to Unreal coordinates
+        Hand0Position.X = OSC_Z * 300.0f;
+        Hand0Position.Y = OSC_X * 800.0f;
+        Hand0Position.Z = (1.0f - OSC_Y) * 600.0f;
+        
+        UE_LOG(LogTemp, Log, TEXT("Hand 0 Position: %s"), *Hand0Position.ToString());
+    }
+}
+
+void AHandTracker::OnVelocityReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+{
+    if (Message.GetArguments().Num() >= 3)
+    {
+        float OSC_VX = Message.GetArguments()[0].GetFloat();
+        float OSC_VY = Message.GetArguments()[1].GetFloat();
+        float OSC_VZ = Message.GetArguments()[2].GetFloat();
+        
+        // Transform velocity (mm/s → cm/s)
+        Hand0Velocity.X = OSC_VZ * 0.1f;
+        Hand0Velocity.Y = OSC_VX * 0.1f;
+        Hand0Velocity.Z = -OSC_VY * 0.1f;
+    }
+}
+
+void AHandTracker::OnGestureReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+{
+    if (Message.GetArguments().Num() >= 3)
+    {
+        // int32 GestureID = Message.GetArguments()[0].GetInt();
+        // float Confidence = Message.GetArguments()[1].GetFloat();
+        FString GestureName = Message.GetArguments()[2].GetString();
+        
+        Hand0Gesture = GestureName;
+        
+        // Trigger gameplay events based on gesture
+        if (GestureName == TEXT("FIST"))
+        {
+            // Grab action
+        }
+        else if (GestureName == TEXT("FIVE"))
+        {
+            // Release action
+        }
+    }
+}
+```
+
+### Blueprint-freundliche Variante
+
+```cpp
+// Event Dispatcher in Header
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHandGestureChanged, FString, GestureName);
+
+UPROPERTY(BlueprintAssignable, Category = "Hand Tracking")
+FOnHandGestureChanged OnGestureChanged;
+
+// In OnGestureReceived
+OnGestureChanged.Broadcast(GestureName);
+```
+
+**In Blueprint dann:**
+- Event: On Gesture Changed → Switch on String → Execute Actions
+
+### Performance-Tipips
+
+- OSC läuft @ 30 Hz (33ms intervals)
+- Nutze Interpolation für smooth 60 FPS Rendering:
+  ```cpp
+  FVector SmoothedPosition = FMath::VInterpTo(
+      CurrentPosition, 
+      Hand0Position, 
+      DeltaTime, 
+      10.0f  // Interp Speed
+  );
+  ```
+- Cache Gesture-States, feuere Events nur bei Änderungen
+- Nutze `Hand0Velocity` für Prediction/Motion Blur
 
 ---
 
@@ -242,36 +396,11 @@ Data: [0]  # player_id
 - **Rate:** 30 Hz konstant
 - **Latenz:** <60ms Glass-to-OSC
 
-### Client Libraries
-
-**Python:**
-```python
-from pythonosc import udp_client
-
-client = udp_client.SimpleUDPClient("100.101.16.21", 9000)
-
-# Subscribe to hand data (not needed, just listen)
-```
-
-**Unity (OSC Jack):**
-```csharp
-using OscJack;
-
-OscPropertySender sender;
-void Start() {
-    sender = new OscPropertySender("100.101.16.21", 9000);
-}
-```
-
-**Unreal (OSC Plugin):**
-```
-OSC Settings:
-  Receive From: 100.101.16.21:9000
-  Send Targets: (optional)
-  
-Blueprint: Add OSC Server Component
-  Bind: /hand/0/palm → OnHandPalmReceived
-```
+**Wichtig für Unreal Engine:**
+- OSC Plugin muss aktiviert sein
+- Jetson sendet via UDP Broadcast
+- Keine Authentifizierung nötig
+- Fire-and-Forget (keine ACKs)
 
 ---
 
