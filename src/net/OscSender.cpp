@@ -66,61 +66,31 @@ void OscSender::send(const core::TrackingResult& result) {
     // Build OSC path with hand ID (e.g., /hand/0/palm or /hand/1/palm)
     std::string handPrefix = "/hand/" + std::to_string(result.handId);
 
-    // V3: Send palm position
+    // V3: Send palm position (explicit float cast to ensure correct type)
     lo_message palmMsg = lo_message_new();
-    lo_message_add_float(palmMsg, result.palmPosition.x);
-    lo_message_add_float(palmMsg, result.palmPosition.y);
-    lo_message_add_float(palmMsg, result.palmPosition.z);
+    lo_message_add_float(palmMsg, static_cast<float>(result.palmPosition.x));
+    lo_message_add_float(palmMsg, static_cast<float>(result.palmPosition.y));
+    lo_message_add_float(palmMsg, static_cast<float>(result.palmPosition.z));
     lo_send_message(_loAddress, (handPrefix + "/palm").c_str(), palmMsg);
     lo_message_free(palmMsg);
 
-    // V3: Send velocity
+    // V3: Send velocity (explicit float cast)
     lo_message velMsg = lo_message_new();
-    lo_message_add_float(velMsg, result.velocity.vx);
-    lo_message_add_float(velMsg, result.velocity.vy);
-    lo_message_add_float(velMsg, result.velocity.vz);
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vx));
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vy));
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vz));
     lo_send_message(_loAddress, (handPrefix + "/velocity").c_str(), velMsg);
     lo_message_free(velMsg);
 
-    // V3: Send gesture
+    // V3: Send gesture (int, float, string)
     lo_message gestMsg = lo_message_new();
     lo_message_add_int32(gestMsg, static_cast<int32_t>(result.gesture));
-    lo_message_add_float(gestMsg, result.gestureConfidence);
+    lo_message_add_float(gestMsg, static_cast<float>(result.gestureConfidence));
     lo_message_add_string(gestMsg, core::GestureFSM::getStateName(result.gesture));
     lo_send_message(_loAddress, (handPrefix + "/gesture").c_str(), gestMsg);
     lo_message_free(gestMsg);
 
-    // V3: Send VIP status
-    lo_message vipMsg = lo_message_new();
-    lo_message_add_int32(vipMsg, result.vipLocked ? 1 : 0);
-    lo_send_message(_loAddress, (handPrefix + "/vip").c_str(), vipMsg);
-    lo_message_free(vipMsg);
-
-    // Legacy: Full tracking message (for backward compatibility)
-    lo_message msg = lo_message_new();
-
-    // Add VIP Locked status
-    lo_message_add_int32(msg, result.vipLocked ? 1 : 0);
-
-    // Add Landmarks (Blob)
-    // Vector of struct {float,float,float} is contiguous in memory
-    size_t dataSize = result.landmarks.size() * sizeof(core::TrackingResult::NormalizedPoint);
-    lo_blob blob = lo_blob_new(dataSize, result.landmarks.data());
-    lo_message_add_blob(msg, blob);
-
-    // Add Gesture Data
-    lo_message_add_float(msg, result.pinchDistance);
-    lo_message_add_int32(msg, result.gestureId);
-    lo_message_add_string(msg, result.gestureName.c_str());
-
-    // Send message to /hand/tracking
-    int ret = lo_send_message(_loAddress, "/hand/tracking", msg);
-    if (ret == -1) {
-        core::Logger::error("OscSender: Failed to send message.");
-    }
-
-    lo_blob_free(blob);
-    lo_message_free(msg);
+    // Note: Removed /vip message as it's legacy and not needed anymore
 }
 
 } // namespace net
