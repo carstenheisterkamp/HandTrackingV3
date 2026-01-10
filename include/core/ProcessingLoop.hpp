@@ -22,6 +22,7 @@ namespace core {
     class HandTracker;
     class GestureFSM;
     class StereoDepth;
+    struct PlayVolume;
 }
 
 namespace inference {
@@ -86,6 +87,9 @@ private:
     std::array<std::unique_ptr<HandTracker>, MAX_HANDS> _handTrackers;
     std::array<std::unique_ptr<GestureFSM>, MAX_HANDS> _gestureFSMs;
     std::unique_ptr<StereoDepth> _stereoDepth;
+
+    // Phase 4: Play Volume for filtering
+    std::unique_ptr<PlayVolume> _playVolume;
 
     // V3 Inference (TensorRT)
     std::unique_ptr<inference::PalmDetector> _palmDetector;

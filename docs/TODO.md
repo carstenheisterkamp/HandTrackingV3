@@ -64,23 +64,28 @@
 
 **Ergebnis:** Code komplett, wartet auf Testing vor Ort
 
-### 📋 Phase 4: Player Lock System (Design Ready)
+### 📋 Phase 4: Player Lock System (In Progress 🚧)
 **Ziel:** Stabiles Single-User Gaming
 
 **Design:** `PLAYER_LOCK_DESIGN.md` ✅
 
 | Komponente | Status | Details |
 |------------|--------|---------|
-| 3D Play Volume (16:9) | 🎨 Visualisiert | Preview zeigt Box, Filter noch nicht aktiv |
-| Volume Filtering Logic | ⬜ | Hand-Detection innerhalb Volume |
+| 3D Play Volume (16:9) | ✅ Implementiert | Preview + Filtering aktiv |
+| Volume Filtering Logic | ✅ Implementiert | 2D Filter vor Landmark Inference |
 | Face-Anchored Tracking | ⬜ | Haar Cascade Hand-zu-Gesicht |
 | Session FSM (IDLE/ACTIVE/LOST) | ⬜ | State Machine für Player Session |
 | OSC Events (/player/*) | ⬜ | enter/active/lost/exit Events |
 | Multi-Person Ignoring | ⬜ | Ignoriere Personen außerhalb Volume |
 
-**Hinweis:** Play Volume Box wird bereits im Preview angezeigt (grün, 16:9), aber das Volume-Filtering ist noch nicht aktiv. Alle Hände werden aktuell erkannt, unabhängig von der Box.
+**Implementiert (2026-01-10):**
+- ✅ PlayVolume Klasse mit 16:9 Aspect Ratio
+- ✅ 2D Volume-Filtering vor Landmark Inference (Performance-Optimierung)
+- ✅ Debug-Visualisierung: Rejected palms (rote Kreise + "OUT" Label)
+- ✅ Volume Status im Preview: "PLAY VOLUME (16:9) - ACTIVE"
+- ✅ Filtering-Stats im Log
 
-**Priorität:** Nach Phase 3 Testing
+**Priorität:** Aktiv in Entwicklung
 
 ### 📋 Phase 5: Dynamische Gesten
 **Ziel:** Velocity-basierte Gesten

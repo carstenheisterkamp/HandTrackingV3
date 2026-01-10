@@ -14,6 +14,7 @@
 #include "core/ProcessingLoop.hpp"
 #include "core/SystemMonitor.hpp"
 #include "core/HandTracker.hpp"
+#include "core/PlayVolume.hpp"
 #include "core/GestureFSM.hpp"
 #include "core/StereoDepth.hpp"
 
@@ -49,6 +50,13 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
         _gestureFSMs[i] = std::make_unique<GestureFSM>();
     }
     _stereoDepth = std::make_unique<StereoDepth>();
+
+    // Phase 4: Initialize Play Volume (16:9, 0.5m-2.5m)
+    _playVolume = std::make_unique<PlayVolume>(getDefaultPlayVolume());
+    Logger::info("Play Volume initialized: ",
+                 _playVolume->getWidth() * 100, "% x ",
+                 _playVolume->getHeight() * 100, "% (16:9), ",
+                 "Z: ", _playVolume->minZ, "-", _playVolume->maxZ, "mm");
 
     // Note: TensorRT initialization moved to initInference()
     // Called lazily to not block startup
@@ -301,6 +309,43 @@ void ProcessingLoop::processFrame(Frame* frame) {
             static_cast<int>(frame->height),
             MAX_HANDS
         );
+
+        // ═══════════════════════════════════════════════════════════
+        // Phase 4: Volume-Filtering
+        // Filter out palms OUTSIDE the play volume (before landmark inference)
+        // This saves GPU time by not processing hands we'll discard anyway
+        // ═══════════════════════════════════════════════════════════
+        std::vector<inference::PalmDetector::Detection> filteredDetections;
+        int rejectedCount = 0;
+
+        for (const auto& palm : palmDetections) {
+            // Check if palm center is inside 2D play volume
+            // Note: Z-check will be done after stereo depth computation
+            if (_playVolume->contains2D(palm.x, palm.y)) {
+                filteredDetections.push_back(palm);
+            } else {
+                rejectedCount++;
+                // Debug: Show rejected palms in preview
+                if (!debugFrame.empty()) {
+                    int px = static_cast<int>(palm.x * debugFrame.cols);
+                    int py = static_cast<int>(palm.y * debugFrame.rows);
+                    cv::circle(debugFrame, cv::Point(px, py), 10, cv::Scalar(0, 0, 255), 2);  // Red circle
+                    cv::putText(debugFrame, "OUT", cv::Point(px - 15, py - 15),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+                }
+            }
+        }
+
+        // Log filtering stats (every 60 frames)
+        static int filterLogCounter = 0;
+        if (++filterLogCounter % 60 == 1 && rejectedCount > 0) {
+            Logger::info("🔲 Volume Filter: ", palmDetections.size(), " detected, ",
+                        filteredDetections.size(), " in volume, ",
+                        rejectedCount, " rejected");
+        }
+
+        // Continue with filtered detections only
+        palmDetections = std::move(filteredDetections);
 
         // Debug log
         static int detectionLogCounter = 0;
@@ -558,19 +603,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
 void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     // ═══════════════════════════════════════════════════════════
-    // 1. Draw Play Volume (3D Box)
+    // 1. Draw Play Volume (3D Box) - Phase 4 Active Volume
     // ═══════════════════════════════════════════════════════════
-    // Default volume for Phase 3 (will be configurable in Phase 4)
-    // 16:9 aspect ratio to match camera and game format
-    const float volumeMinX = 0.1f;   // 10% margin left
-    const float volumeMaxX = 0.9f;   // 10% margin right
-    const float volumeMinY = 0.1f;   // 10% margin top
-    const float volumeMaxY = 0.9f;   // 10% margin bottom
-    const float volumeMinZ = 0.0f;   // 0.5m normalized to 0
-    const float volumeMaxZ = 1.0f;   // 2.5m normalized to 1
-
-    // Aspect ratio: X span = 0.8 (80%), Y span = 0.8 (80%)
-    // This creates a ~16:9 volume (camera is 640x360 = 16:9)
+    // Use PlayVolume values (16:9 aspect ratio, 0.5m-2.5m depth)
+    const float volumeMinX = _playVolume->minX;
+    const float volumeMaxX = _playVolume->maxX;
+    const float volumeMinY = _playVolume->minY;
+    const float volumeMaxY = _playVolume->maxY;
 
     int vx1 = static_cast<int>(volumeMinX * debugFrame.cols);
     int vx2 = static_cast<int>(volumeMaxX * debugFrame.cols);
@@ -592,11 +631,15 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2 - markerSize, vy2), volumeColor, 3);
     cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2, vy2 - markerSize), volumeColor, 3);
 
-    // Z-Depth indication
-    cv::putText(debugFrame, "PLAY VOLUME (16:9)",
+    // Z-Depth indication and filter status
+    cv::putText(debugFrame, "PLAY VOLUME (16:9) - ACTIVE",
                 cv::Point(vx1 + 10, vy1 + 25),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, volumeColor, 1, cv::LINE_AA);
-    cv::putText(debugFrame, "Z: 0.5m - 2.5m",
+
+    char depthStr[64];
+    snprintf(depthStr, sizeof(depthStr), "Z: %.1fm - %.1fm (Filtering ON)",
+             _playVolume->minZ / 1000.0f, _playVolume->maxZ / 1000.0f);
+    cv::putText(debugFrame, depthStr,
                 cv::Point(vx1 + 10, vy1 + 45),
                 cv::FONT_HERSHEY_SIMPLEX, 0.4, volumeColor, 1, cv::LINE_AA);
 
