@@ -156,6 +156,14 @@ void ProcessingLoop::loop() {
                 _inferenceInitialized = true;
                 Logger::info("✅ TensorRT inference initialized successfully (background)");
                 Logger::info("   Ready for palm detection and landmark inference!");
+
+                // Initialize StereoDepth with default calibration
+                if (_stereoDepth && _stereoDepth->loadFromDevice(nullptr)) {
+                    _stereoInitialized = true;
+                    Logger::info("✅ StereoDepth initialized (default OAK-D calibration)");
+                } else {
+                    Logger::warn("⚠️ StereoDepth initialization failed - Z-coordinate disabled");
+                }
             } else {
                 Logger::warn("❌ TensorRT inference initialization failed");
                 if (!palmOk) Logger::warn("   Palm detector init failed");
@@ -205,6 +213,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
             Logger::info("     Gesture: ", _handStates[h].gesture);
         }
         Logger::info("TensorRT: ", _inferenceInitialized ? "Ready" : "Not initialized");
+        Logger::info("StereoDepth: ", _stereoInitialized ? "Ready" : "Not initialized");
+        if (frame->hasStereoData) {
+            Logger::info("  Mono L/R: ", frame->monoWidth, "x", frame->monoHeight);
+        }
 
         _frameCount = 0;
         _lastFpsTime = now;
@@ -371,7 +383,38 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 }
 
                 // Kalman + Gesture (per hand)
-                float palmZ = 0.0f;  // TODO: Phase 4 - Stereo Depth
+                float palmZ = 0.0f;
+
+                // Phase 3: Stereo Depth - compute Z at palm center
+                if (_stereoInitialized && frame->hasStereoData &&
+                    frame->monoLeftData && frame->monoRightData) {
+
+                    // Convert normalized palm coords to mono image pixel coords
+                    // Note: Mono is 640x400, RGB preview is 640x360
+                    int palmPxX = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
+                    int palmPxY = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
+
+                    // Get depth at palm center (returns mm, or -1 if invalid)
+                    float depthMm = _stereoDepth->getDepthAtPoint(
+                        frame->monoLeftData.get(),
+                        frame->monoRightData.get(),
+                        static_cast<int>(frame->monoWidth),
+                        static_cast<int>(frame->monoHeight),
+                        palmPxX, palmPxY
+                    );
+
+                    if (depthMm > 0) {
+                        // Convert mm to meters and normalize (0.5m-3m → 0-1)
+                        palmZ = (depthMm / 1000.0f - 0.5f) / 2.5f;
+                        palmZ = std::max(0.0f, std::min(1.0f, palmZ));
+
+                        // Debug log (every 30 frames)
+                        static int depthLogCounter = 0;
+                        if (++depthLogCounter % 30 == 1) {
+                            Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (Z=", palmZ, ")");
+                        }
+                    }
+                }
 
                 Point3D palm3D = {landmarks->palmCenterX, landmarks->palmCenterY, palmZ};
                 _handTrackers[h]->predict(dt);

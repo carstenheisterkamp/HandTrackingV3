@@ -73,6 +73,7 @@ private:
     std::unique_ptr<inference::HandLandmark> _handLandmark;
     bool _inferenceInitialized = false;
     bool _inferenceAttempted = false;
+    bool _stereoInitialized = false;  // Phase 3: Stereo Depth
     std::thread _trtInitThread;
     std::mutex _trtMutex;
 

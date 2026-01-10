@@ -1,8 +1,8 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 2 - 2D Hand Tracking ABGESCHLOSSEN ✅
-> **Letztes Update:** 2026-01-09
-> **Status:** ✅ Stabil @ 25-30 FPS mit 2 Händen und Gesten
+> **Aktuelle Phase:** Phase 3 - Stereo Depth IN ARBEIT 🚧
+> **Letztes Update:** 2026-01-10
+> **Status:** 2D Tracking ✅ komplett, 3D Integration gestartet
 
 ---
 
@@ -12,7 +12,7 @@
 
 **Was funktioniert:**
 - ✅ **2-Hand Tracking** - Beide Hände parallel erkannt und getrackt
-- ✅ **Y-basierte Gesten** - Robust gegen Betrachtungswinkel
+- ✅ **MCP+Angle Gesten** - Robuste Erkennung mit Fallback
   - FIST ✊, THUMBS_UP 👍, POINTING ☝️, PEACE ✌️, FIVE 🖐️, METAL 🤘, etc.
 - ✅ **Haar Cascade Face Filter** - Null False Positives im Gesicht
 - ✅ **Kalman Tracking** - Smooth 6-State Filter
@@ -21,25 +21,25 @@
 
 ---
 
-## 🎯 Aktuelle Aufgabe: Gesten-Optimierung
+## 🎯 Aktuelle Aufgabe: Phase 3 - Stereo Depth
 
-**Problem (2026-01-09):**
-- Nur FIST, PEACE, POINTING werden einigermaßen erkannt
-- Andere Gesten (THUMBS_UP, FIVE, etc.) nicht zuverlässig bei allen Entfernungen
+**Ziel:** Z-Koordinate (Tiefe) für 3D Hand Position
 
-**Lösung: MCP-basiert + Angle-Fallback (2026-01-09):**
-- ✅ **MCP-basierte Primär-Prüfung:**
-  - `tip.y < mcp.y - threshold` = größerer Y-Unterschied als PIP
-  - Robuster bei verschiedenen Entfernungen
-- ✅ **Angle-Fallback bei Ambiguität:**
-  - Wenn MCP-Check nicht eindeutig → Winkel am PIP-Gelenk berechnen
-  - `angle > 145°` = Finger gestreckt
-- ✅ **Verbesserter Daumen-Check:**
-  - 3 Checks: X-Position + Spread von Index + Extension von Wrist
-  - Voting: 2 von 3 müssen passen
-- ✅ Dynamische Thresholds (12% der Hand-Größe)
+**Was bereits existiert:**
+- ✅ StereoDepth.cpp - Punktuelle Tiefenmessung am Palm Center
+- ✅ StereoKernel.cu - CUDA SAD Block Matching
+- ✅ PipelineManager - Mono L/R Streams (wenn enableStereo=true)
+- ✅ Default Kalibrierung (OAK-D Pro PoE ~75mm Baseline)
 
-**Nächster Schritt:** Testen - dann erst committen!
+**TODO Phase 3:**
+- ⬜ `enableStereo=true` in main.cpp aktivieren
+- ⬜ InputLoop: Mono L/R aus MessageGroup extrahieren
+- ⬜ Frame: Mono-Daten speichern (monoLeft, monoRight)
+- ⬜ ProcessingLoop: StereoDepth am Palm Center aufrufen
+- ⬜ Z-Koordinate in OSC Output integrieren
+- ⬜ **TEST:** Bekannte Abstände (50cm, 100cm) verifizieren
+
+**Nächster Schritt:** Integration testen wenn Kamera verfügbar
 
 ---
 
@@ -54,6 +54,26 @@
 ---
 
 ## 📋 Backlog / Später
+
+### 🎛️ One-Euro Filter (Optional - Falls Kalman nicht ausreicht)
+**Problem:** Kalman Filter glättet gut bei konstanter Geschwindigkeit, aber bei schnellen Richtungswechseln kann es Lag geben.
+
+**Lösung:** One-Euro Filter ergänzen
+- Bessere Reaktion auf schnelle Bewegungen
+- Adaptive Cutoff-Frequenz basierend auf Velocity
+- Besonders gut für UI/Gaming wo schnelle Präzision wichtig ist
+
+**Referenz:** http://cristal.univ-lille.fr/~casiez/1euro/
+
+**Priorität:** Nach Phase 3 Testing - nur wenn User Feedback zeigt, dass Kalman nicht reicht
+
+**Implementation:**
+- ⬜ One-Euro Filter Klasse (`core/OneEuroFilter.hpp/cpp`)
+- ⬜ Optional aktivierbar via Config-Flag
+- ⬜ Parallel zu Kalman oder als Ersatz
+- ⬜ Parameter: `minCutoff=1.0`, `beta=0.007`, `dcutoff=1.0`
+
+---
 
 ### 🔌 Service Resilience (LAN/Kamera Reconnect)
 **Problem:** Service crashed oder hängt wenn:
@@ -185,7 +205,7 @@
 | ProcessingLoop Integration | ✅ | Inference Pipeline |
 | Test: 30+ FPS verifizieren | ✅ | Mit beiden NNs |
 
-### Phase 3: Stereo Depth (Punktuell)
+### Phase 3: Stereo Depth (Punktuell) - IN ARBEIT 🚧
 **Ziel:** Z-Koordinate nur am Palm Center
 
 | Task | Status | Notes |
@@ -195,9 +215,13 @@
 | Lokales Stereo Matching (9×9) | ✅ | SAD Block Matching |
 | Median Filter für Robustheit | ✅ | robustMedian() |
 | Z in Kamera-Koordinaten | ✅ | pixelTo3D() |
+| Pipeline: Mono L/R Streams | ✅ | enableStereo=true |
+| InputLoop: Mono L/R extrahieren | ✅ | MessageGroup parsing |
+| ProcessingLoop: Z am Palm | ✅ | getDepthAtPoint() |
+| Z in OSC Output | ✅ | /hand/palm z-coordinate |
 | Rectification Maps berechnen | ⬜ | TODO: OpenCV stereoRectify |
 | Device Kalibrierung laden | ⬜ | dai::Device::readCalibration() |
-| Test: Tiefe verifizieren | ⬜ | Bekannte Abstände |
+| **TEST: Tiefe verifizieren** | ⬜ | Bekannte Abstände (50cm, 100cm) |
 
 ### Phase 4: Kalman Tracking
 **Ziel:** Glatte, prädiktive Trajektorien

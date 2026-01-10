@@ -56,7 +56,7 @@ int main() {
             config.previewHeight = 360;  // RGB Preview height
             config.monoWidth = 640;      // Mono L/R width (THE_400_P)
             config.monoHeight = 400;     // Mono L/R height (THE_400_P)
-            config.enableStereo = false; // V3 Phase 1-2: RGB-only (enable in Phase 3)
+            config.enableStereo = true;  // V3 Phase 3: Stereo Depth enabled for Z-coordinate
             config.nnPath = "";  // V3: NNs disabled on OAK-D, run on Jetson
             config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
 

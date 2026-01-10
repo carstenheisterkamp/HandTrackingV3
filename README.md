@@ -4,22 +4,26 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 
 ---
 
-## 🎯 Aktueller Status (2026-01-09)
+## 🎯 Aktueller Status (2026-01-10)
 
 **Phase 2 - 2D Hand Tracking: ABGESCHLOSSEN ✅**
 - ✅ **TensorRT Inference** - Palm Detection + Hand Landmark auf Jetson
 - ✅ **2-Hand Tracking** - Beide Hände gleichzeitig erkannt
-- ✅ **Y-basierte Gesten** - Robuste Erkennung (FIST, THUMBS_UP, PEACE, FIVE, etc.)
+- ✅ **MCP+Angle Gesten** - Robuste Erkennung mit Fallback
 - ✅ **Haar Cascade Face Filter** - Keine False Positives mehr im Gesicht
 - ✅ **25-30 FPS** stabil mit voller Inference Pipeline
+
+**Phase 3 - Stereo Depth: IN ARBEIT 🚧**
+- ✅ Mono L/R Streams in Pipeline integriert
+- ✅ StereoDepth am Palm Center implementiert
+- ✅ Z-Koordinate in OSC Output
+- ⬜ **TEST AUSSTEHEND** - Tiefenwerte bei bekannten Abständen verifizieren
 
 **Dokumentation:**
 - [TODO.md](docs/TODO.md) - Aktueller Projekt-Status
 - [OPTIMAL_WORKFLOW_V3.md](docs/OPTIMAL_WORKFLOW_V3.md) - V3 Architektur
 - [OSC_GESTURE_REFERENCE.md](docs/OSC_GESTURE_REFERENCE.md) - OSC Protokoll
 
-**Nächste Phase:**
-- ⬜ Phase 3: Stereo Depth (Z-Koordinaten für 3D Position)
 
 ---
 
