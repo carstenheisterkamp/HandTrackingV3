@@ -82,6 +82,14 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_send_message(_loAddress, (handPrefix + "/velocity").c_str(), velMsg);
     lo_message_free(velMsg);
 
+    // V3: Send delta (acceleration/change in velocity)
+    lo_message deltaMsg = lo_message_new();
+    lo_message_add_float(deltaMsg, static_cast<float>(result.delta.dx));
+    lo_message_add_float(deltaMsg, static_cast<float>(result.delta.dy));
+    lo_message_add_float(deltaMsg, static_cast<float>(result.delta.dz));
+    lo_send_message(_loAddress, (handPrefix + "/delta").c_str(), deltaMsg);
+    lo_message_free(deltaMsg);
+
     // V3: Send gesture (int, float, string)
     lo_message gestMsg = lo_message_new();
     lo_message_add_int32(gestMsg, static_cast<int32_t>(result.gesture));

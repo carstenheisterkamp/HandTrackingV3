@@ -100,23 +100,23 @@ struct Velocity3D {
     float vz = 0.0f;
 };
 
+struct Delta3D {
+    float dx = 0.0f;  // Change in velocity X (acceleration)
+    float dy = 0.0f;  // Change in velocity Y
+    float dz = 0.0f;  // Change in velocity Z
+};
+
 struct TrackingResult {
-    struct NormalizedPoint {
-        float x, y, z;
-    };
-
-    // V3: Hand identification (0 or 1 for 2-hand tracking)
-    int handId = 0;
-
-    std::vector<NormalizedPoint> landmarks; // 21 points * 3 coords
-    bool vipLocked = false;
-    std::chrono::steady_clock::time_point timestamp;
+    // ...existing code...
 
     // V3: Palm center (Kalman filtered, predicted)
     Point3D palmPosition;
 
     // V3: Velocity from Kalman state
     Velocity3D velocity;
+
+    // V3: Delta (Acceleration/Change in velocity)
+    Delta3D delta;
 
     // V3: Gesture state (FSM output)
     GestureState gesture = GestureState::Idle;

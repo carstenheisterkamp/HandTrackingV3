@@ -540,6 +540,12 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 result.handId = static_cast<int>(h);  // Hand ID for OSC routing
                 result.palmPosition = _handTrackers[h]->getPosition();
                 result.velocity = _handTrackers[h]->getVelocity();
+
+                // Calculate delta (acceleration) from velocity change
+                result.delta.dx = result.velocity.vx - _handStates[h].prevVelX;
+                result.delta.dy = result.velocity.vy - _handStates[h].prevVelY;
+                result.delta.dz = result.velocity.vz - _handStates[h].prevVelZ;
+
                 result.gesture = gesture;
                 result.vipLocked = _handTrackers[h]->isLocked();
                 result.timestamp = std::chrono::steady_clock::now();
@@ -552,10 +558,10 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 _handStates[h].palmY = result.palmPosition.y;
                 _handStates[h].palmZ = result.palmPosition.z;
 
-                // Calculate delta (acceleration) from velocity change
-                _handStates[h].deltaX = result.velocity.vx - _handStates[h].prevVelX;
-                _handStates[h].deltaY = result.velocity.vy - _handStates[h].prevVelY;
-                _handStates[h].deltaZ = result.velocity.vz - _handStates[h].prevVelZ;
+                // Store delta for display (already calculated in result)
+                _handStates[h].deltaX = result.delta.dx;
+                _handStates[h].deltaY = result.delta.dy;
+                _handStates[h].deltaZ = result.delta.dz;
 
                 // Store current velocity for next frame's delta
                 _handStates[h].prevVelX = result.velocity.vx;

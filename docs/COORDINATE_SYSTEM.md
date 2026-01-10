@@ -13,25 +13,25 @@
 |-------|-----------|------------------|---------|
 | **X** | 0.0 - 1.0 | Links → Rechts | Bildabhängig |
 | **Y** | 0.0 - 1.0 | Oben → Unten | Bildabhängig |
-| **Z** | 0.0 - 1.0 | **0.5m → 2.5m** | Linear gemappt |
+| **Z** | 0.0 - 1.0 | **1.2m → 2.8m** | Linear gemappt |
 
-### Z-Koordinate Berechnung
+### Z-Koordinate Berechnung (Game Volume für 2m Spieler)
 
 ```
-Z_normalized = (Z_mm - 500) / (2500 - 500)
-             = (Z_mm - 500) / 2000
+Z_normalized = (Z_mm - 1200) / (2800 - 1200)
+             = (Z_mm - 1200) / 1600
 
 Beispiele:
-  0.5m (500mm)  → Z = 0.0
-  1.0m (1000mm) → Z = 0.25
-  1.5m (1500mm) → Z = 0.5
-  2.0m (2000mm) → Z = 0.75
-  2.5m (2500mm) → Z = 1.0
+  1.2m (1200mm) → Z = 0.0  (Arm voll ausgestreckt)
+  1.6m (1600mm) → Z = 0.25
+  2.0m (2000mm) → Z = 0.5  (Spieler-Position)
+  2.4m (2400mm) → Z = 0.75
+  2.8m (2800mm) → Z = 1.0  (Arm am Körper)
 ```
 
 **Wichtig:** 
-- Werte < 0.5m werden als 0.0 geclampt
-- Werte > 2.5m werden als 1.0 geclampt
+- Werte < 1.2m werden als 0.0 geclampt
+- Werte > 2.8m werden als 1.0 geclampt
 
 ---
 
@@ -271,21 +271,23 @@ Empfehlung: 12-15° Neigung für sichere Hand-über-Kopf Erkennung!
 
 ## 📦 Play Volume (3D Spielbereich)
 
-### Aktuelle Konfiguration (90% Default)
+### Aktuelle Konfiguration (Game Volume für 2m Spieler)
 
 ```cpp
 // Code: include/core/PlayVolume.hpp
-PlayVolume {
-    minX = 0.05f;    // 5% Margin links
-    maxX = 0.95f;    // 5% Margin rechts
-    minY = 0.05f;    // 5% Margin oben
-    maxY = 0.95f;    // 5% Margin unten
-    minZ = 500.0f;   // 0.5m minimum
-    maxZ = 2500.0f;  // 2.5m maximum
+PlayVolume getGamePlayVolume() {
+    minX = 0.0f;     // 100% horizontal (Fullscreen)
+    maxX = 1.0f;
+    minY = 0.0f;     // 100% vertikal (Fullscreen)
+    maxY = 1.0f;
+    minZ = 1200.0f;  // 1.2m - Arm voll ausgestreckt
+    maxZ = 2800.0f;  // 2.8m - Arm am Körper
 }
 ```
 
-### Visualisierung
+**Aktiv in:** `src/core/ProcessingLoop.cpp` (Konstruktor ruft `getGamePlayVolume()`)
+
+### Visualisierung (für Game Volume @ 2m Spieler)
 
 ```
 Draufsicht (von oben):
@@ -293,37 +295,37 @@ Draufsicht (von oben):
          Kamera/Display
               ↓
     ┌─────────────────────┐
-    │ ← 0.7m breit →     │  @ 0.5m Entfernung
+    │ ← 1.6m breit →     │  @ 1.2m (Vorderkante, Z=0.0)
     └─────────────────────┘
            ▼ ▼ ▼
-    ┌─────────────────────────┐
-    │  ← 1.4m breit →        │  @ 1.0m
-    └─────────────────────────┘
+    ┌───────────────────────────┐
+    │  ← 1.9m breit →          │  @ 1.6m (Z=0.25)
+    └───────────────────────────┘
            ▼ ▼ ▼
-    ┌───────────────────────────────┐
-    │   ← 2.2m breit →             │  @ 1.5m (Sweet Spot)
-    └───────────────────────────────┘
+    ┌─────────────────────────────────┐
+    │   ← 2.2m breit →               │  @ 2.0m (Spieler, Z=0.5)
+    └─────────────────────────────────┘
            ▼ ▼ ▼
-    ┌─────────────────────────────────────┐
-    │    ← 2.9m breit →                  │  @ 2.0m
-    └─────────────────────────────────────┘
+    ┌───────────────────────────────────────┐
+    │    ← 2.5m breit →                    │  @ 2.4m (Z=0.75)
+    └───────────────────────────────────────┘
            ▼ ▼ ▼
-    ┌───────────────────────────────────────────┐
-    │     ← 3.6m breit →                       │  @ 2.5m
-    └───────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────┐
+    │     ← 2.8m breit →                         │  @ 2.8m (Hinterkante, Z=1.0)
+    └─────────────────────────────────────────────┘
 ```
 
-### Physische Größe bei verschiedenen Abständen
+### Physische Größe bei verschiedenen Abständen (Game Volume)
 
-| Abstand | Breite (90%) | Höhe (90%) | Fläche |
-|---------|--------------|------------|--------|
-| 0.5m | ~0.7m | ~0.4m | ~0.3 m² |
-| 1.0m | ~1.4m | ~0.8m | ~1.1 m² |
-| 1.5m | ~2.2m | ~1.2m | ~2.6 m² |
-| 2.0m | ~2.9m | ~1.6m | ~4.6 m² |
-| 2.5m | ~3.6m | ~2.0m | ~7.2 m² |
+| Abstand | Breite (100%) | Höhe (100%) | Fläche | OSC Z |
+|---------|---------------|-------------|--------|-------|
+| 1.2m | ~1.6m | ~0.9m | ~1.4 m² | 0.0 |
+| 1.6m | ~1.9m | ~1.1m | ~2.1 m² | 0.25 |
+| 2.0m | ~2.2m | ~1.3m | ~2.9 m² | 0.5 |
+| 2.4m | ~2.5m | ~1.4m | ~3.5 m² | 0.75 |
+| 2.8m | ~2.8m | ~1.6m | ~4.5 m² | 1.0 |
 
-**Sweet Spot:** 1.5m - 2.0m Entfernung (optimale Balance aus Tracking-Qualität und Bewegungsfreiheit)
+**Sweet Spot:** 1.8m - 2.2m Entfernung (OSC Z: 0.375 - 0.625)
 
 ---
 
@@ -487,44 +489,182 @@ Wenn die Werte matchen → **Perfekt kalibriert!** ✅
 
 ---
 
-## 🎮 Unreal Engine Mapping
+## 🎮 Unreal Engine Mapping (Flexibles Volume-Scaling)
 
-### Koordinaten-Transformation (für 2m Spieler)
+### 🎯 Konzept: Normalisierung ermöglicht flexible Skalierung
 
-```cpp
-// OSC → Unreal World Space (Standing Player @ 2m)
+**Wichtig:** OSC sendet **normalisierte Koordinaten (0.0 - 1.0)**, die **unabhängig von physischen Dimensionen** sind!
 
-// Tiefe (0-1 normalized → 1.2m-2.8m real)
-Hand.Location.X = (OSC_Z * 1600.0f + 1200.0f) * 0.1f;  // in cm
-                // = OSC_Z * 160 + 120 cm
+```
+Physisches Game Volume (fest):
+├─ 1.6m Tiefe  (1200mm - 2800mm)
+├─ 3.2m Breite (@ 2m Kamera-Abstand)
+└─ 1.8m Höhe   (@ 2m Kamera-Abstand)
 
-// Horizontal (0-1 normalized, ~3.2m real coverage @ 2m)
-Hand.Location.Y = (OSC_X - 0.5f) * 3200.0f * 0.1f;     // in cm
-                // = (OSC_X - 0.5) * 320 cm
-                // Zentriert: OSC_X=0.5 → Y=0
+Virtuelles UE Volume (FLEXIBEL skalierbar):
+├─ 1.6m → 16m → 160m → 1600m (beliebig!)
+├─ 3.2m → 32m → 320m → 3200m
+└─ 1.8m → 18m → 180m → 1800m
 
-// Vertikal (0-1 normalized, ~1.8m real coverage @ 2m, invertiert)
-Hand.Location.Z = (1.0f - OSC_Y) * 1800.0f * 0.1f;     // in cm
-                // = (1.0 - OSC_Y) * 180 cm
-
-// Beispiel:
-// OSC: (x=0.5, y=0.5, z=0.5) → 2m entfernt, bildmitte, neutral
-// UE:  (X=180cm, Y=0cm, Z=90cm) ← Relativ zu Spieler-Position
+→ 1m physische Bewegung = X m virtuelle Bewegung
+  X ist frei konfigurierbar in Unreal Engine!
 ```
 
-### Play Volume Bounds in Unreal
+### Koordinaten-Transformation (flexibel)
 
+**Basis-Formel:**
 ```cpp
-// World-Space Bounds für Debuggung/Visualisierung
+// Definiere dein virtuelles Volume (beliebige Größe!)
+FVector VolumeSize(X, Y, Z);        // in cm (UE Standard)
+FVector VolumeOrigin(0, 0, 0);      // Startpunkt im Level
 
-// Vorderkante (1.2m von Kamera):
-FVector VolumeFrontMin(-80.0f, -160.0f, 0.0f);     // 1.2m = 120cm
-FVector VolumeFrontMax(80.0f, 160.0f, 0.0f);      // 1.6m breit
-
-// Hinterkante (2.8m von Kamera):
-FVector VolumeBackMin(-110.0f, -220.0f, 0.0f);    // 2.8m = 280cm
-FVector VolumeBackMax(110.0f, 220.0f, 0.0f);      // 2.2m breit
+// OSC (0-1) → UE World Space
+Hand.Location.X = VolumeOrigin.X + OSC_Z * VolumeSize.X;          // Tiefe
+Hand.Location.Y = VolumeOrigin.Y + OSC_X * VolumeSize.Y;          // Horizontal
+Hand.Location.Z = VolumeOrigin.Z + (1.0f - OSC_Y) * VolumeSize.Z; // Vertikal (invertiert)
 ```
+
+### Skalierungs-Beispiele
+
+**1:1 Realistisch (1.6m physisch = 1.6m virtuell)**
+```cpp
+FVector VolumeSize(160.0f, 320.0f, 180.0f);  // 1.6m × 3.2m × 1.8m
+// → Natürliche 1:1 Bewegung
+```
+
+**10:1 "Large World" (1.6m physisch = 16m virtuell)**
+```cpp
+FVector VolumeSize(1600.0f, 3200.0f, 1800.0f);  // 16m × 32m × 18m
+// → 10cm Hand-Bewegung = 1m virtuelle Bewegung
+// → Gut für große Level mit präziser Kontrolle
+```
+
+**100:1 "Giant Mode" (1.6m physisch = 160m virtuell)**
+```cpp
+FVector VolumeSize(16000.0f, 32000.0f, 18000.0f);  // 160m × 320m × 180m
+// → 1cm Hand-Bewegung = 1m virtuelle Bewegung
+// → Perfekt für riesige Welten (Flight Simulator, God Games)
+```
+
+**0.1:1 "Precision Mode" (1.6m physisch = 16cm virtuell)**
+```cpp
+FVector VolumeSize(16.0f, 32.0f, 18.0f);  // 16cm × 32cm × 18cm
+// → 10cm Hand-Bewegung = 1cm virtuelle Bewegung
+// → Perfekt für Mikroskop, Chirurgie-Simulation, Feinmechanik
+```
+
+**Asymmetrische Skalierung (verschiedene Achsen)**
+```cpp
+// Tiefe: 20× größer, Breite: 10×, Höhe: 1:1
+FVector VolumeSize(3200.0f, 3200.0f, 180.0f);  // 32m × 32m × 1.8m
+// → Tiefe und Breite scaled, Höhe realistisch
+// → Nützlich für flache, breite Level (Racing, Platformer)
+```
+
+### Box Component als Referenz (Empfohlen)
+
+### Box Component als Referenz (Empfohlen)
+
+**Warum Box Component?**
+- ✅ Größe direkt im Editor einstellbar (keine Code-Änderung)
+- ✅ Visualisierung im Level sichtbar
+- ✅ Automatische Bounds-Berechnung
+- ✅ Move/Rotate/Scale wie jedes andere Actor
+
+**Implementation:**
+```cpp
+UCLASS()
+class YOURGAME_API AHandTracker : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    // Box Component für Play Volume (im Editor sichtbar)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Tracking")
+    UBoxComponent* PlayVolumeBox;
+
+    AHandTracker()
+    {
+        // Create box component
+        PlayVolumeBox = CreateDefaultSubobject<UBoxComponent>(TEXT("PlayVolume"));
+        RootComponent = PlayVolumeBox;
+        
+        // Default size: 10m × 20m × 5m (anpassbar im Editor!)
+        PlayVolumeBox->SetBoxExtent(FVector(500.0f, 1000.0f, 250.0f));  // Halbe Größe
+        PlayVolumeBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+        PlayVolumeBox->ShapeColor = FColor::Green;
+    }
+
+    void OnPalmReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+    {
+        if (Message.GetArguments().Num() >= 3)
+        {
+            float OSC_X = Message.GetArguments()[0].GetFloat();
+            float OSC_Y = Message.GetArguments()[1].GetFloat();
+            float OSC_Z = Message.GetArguments()[2].GetFloat();
+            
+            // Get box bounds (from Editor settings)
+            FVector BoxExtent = PlayVolumeBox->GetScaledBoxExtent();
+            FVector BoxOrigin = PlayVolumeBox->GetComponentLocation();
+            
+            // Map OSC (0-1) to Box Volume
+            // Note: Extent is HALF size, so multiply by 2
+            Hand0Position.X = BoxOrigin.X + (OSC_Z * 2.0f - 1.0f) * BoxExtent.X;
+            Hand0Position.Y = BoxOrigin.Y + (OSC_X * 2.0f - 1.0f) * BoxExtent.Y;
+            Hand0Position.Z = BoxOrigin.Z + ((1.0f - OSC_Y) * 2.0f - 1.0f) * BoxExtent.Z;
+        }
+    }
+};
+```
+
+**Im Unreal Editor:**
+1. Place "AHandTracker" Actor im Level
+2. Select Actor → Details Panel
+3. **PlayVolumeBox → Box Extent:**
+   - X: 500 = 10m Tiefe (500cm × 2 = 1000cm)
+   - Y: 1000 = 20m Breite (1000cm × 2 = 2000cm)
+   - Z: 250 = 5m Höhe (250cm × 2 = 500cm)
+4. **Ändern nach Bedarf!** (z.B. 5000, 10000, 25000 für Giant Mode)
+
+### Velocity Skalierung
+
+**Problem:** Velocity kommt in mm/s, muss aber mit Volume-Größe skaliert werden!
+
+**Lösung:**
+```cpp
+void OnVelocityReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+{
+    if (Message.GetArguments().Num() >= 3 && PlayVolumeBox)
+    {
+        float OSC_VX = Message.GetArguments()[0].GetFloat();  // mm/s
+        float OSC_VY = Message.GetArguments()[1].GetFloat();
+        float OSC_VZ = Message.GetArguments()[2].GetFloat();
+        
+        FVector BoxExtent = PlayVolumeBox->GetScaledBoxExtent();
+        
+        // Physische Ranges (mm):
+        // Z: 1600mm (1.2m-2.8m)
+        // X: ~3200mm (@ 2m Kamera-Abstand)
+        // Y: ~1800mm (@ 2m Kamera-Abstand)
+        
+        // Scale factors: Virtual size / Physical size
+        float ScaleX = (BoxExtent.X * 2.0f) / 1600.0f;  // Tiefe
+        float ScaleY = (BoxExtent.Y * 2.0f) / 3200.0f;  // Breite
+        float ScaleZ = (BoxExtent.Z * 2.0f) / 1800.0f;  // Höhe
+        
+        // Apply scaling (mm/s → cm/s)
+        Hand0Velocity.X = OSC_VZ * ScaleX * 0.1f;
+        Hand0Velocity.Y = OSC_VX * ScaleY * 0.1f;
+        Hand0Velocity.Z = -OSC_VY * ScaleZ * 0.1f;  // Invertiert
+    }
+}
+```
+
+**Beispiel:**
+- Volume: 10m × 20m × 5m
+- Hand bewegt sich mit 100mm/s physisch (nach vorne)
+- Scale: (500cm × 2) / 160cm = 6.25×
+- Virtual Velocity: 100 × 6.25 × 0.1 = 62.5 cm/s ✅
 
 ---
 
@@ -613,8 +753,8 @@ Praktisch erreichbar: ±1cm @ 2m optimal
 ### Im MJPEG Preview (http://100.101.16.21:8080)
 
 Zeigt die grüne Play Volume Box mit:
-- "PLAY VOLUME (16:9) - ACTIVE"
-- "Z: 0.5m - 2.5m (Filtering ON)"
+- "GAME VOLUME (FULLSCREEN) - ACTIVE"
+- "Z: 1.2m - 2.8m (Standing @ 2m)"
 - Hände außerhalb: Roter Kreis + "OUT" Label
 
 ### Im Log
@@ -625,18 +765,18 @@ journalctl -u hand-tracking -f | grep "Play Volume"
 
 Sollte zeigen:
 ```
-Play Volume initialized: 90% x 90% (16:9), Z: 500-2500mm
+Play Volume initialized (GAME): 100% x 100% coverage, Z: 1200-2800mm (1.2m-2.8m)
 ```
 
 ### OSC Werte prüfen
 
-Bei bekannter Entfernung (z.B. 1.0m mit Maßband):
+Bei bekannter Entfernung (z.B. 2.0m mit Maßband):
 ```python
 # Python OSC Monitor
-/hand/0/palm: (0.5, 0.5, 0.25)  # Z=0.25 → 1.0m ✅
+/hand/0/palm: (0.5, 0.5, 0.5)  # Z=0.5 → 2.0m ✅
 ```
 
-Erwarteter Z-Wert: `(Entfernung_mm - 500) / 2000`
+Erwarteter Z-Wert: `(Entfernung_mm - 1200) / 1600`
 
 ---
 

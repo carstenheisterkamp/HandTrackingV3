@@ -12,11 +12,13 @@
 ### Hand Tracking (Pro Hand)
 ```
 /hand/0/palm           [x, y, z]        # Palm Position (0-1 normalized)
-/hand/0/velocity       [vx, vy, vz]     # Velocity (Kalman gefiltert)
+/hand/0/velocity       [vx, vy, vz]     # Velocity (mm/s, Kalman gefiltert)
+/hand/0/delta          [dx, dy, dz]     # Acceleration (mm/s², change in velocity)
 /hand/0/gesture        [id, conf, name] # [State-ID, Confidence, Name]
 
 /hand/1/palm           [x, y, z]        # Zweite Hand (wenn erkannt)
-/hand/1/velocity       [vx, vy, vz]
+/hand/1/velocity       [vx, vy, vz]     # Velocity (mm/s)
+/hand/1/delta          [dx, dy, dz]     # Acceleration (mm/s²)
 /hand/1/gesture        [id, conf, name]
 ```
 
@@ -690,6 +692,16 @@ Data: [2, 0.95, "FIST"]    # (id, confidence, name)
 Address: /hand/0/velocity
 Type: fff
 Data: [12.3, -8.5, 45.2]   # (vx, vy, vz) in mm/s
+```
+
+### Delta (Acceleration)
+```
+Address: /hand/0/delta
+Type: fff
+Data: [5.2, -3.1, 12.8]    # (dx, dy, dz) in mm/s²
+Info: Change in velocity (acceleration)
+      Useful for: Impact detection, sudden stops, momentum-based interactions
+      Positive = speeding up, Negative = slowing down
 ```
 
 ### Player Event (geplant)
