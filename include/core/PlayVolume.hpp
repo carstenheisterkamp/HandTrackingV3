@@ -67,12 +67,37 @@ struct PlayVolume {
  */
 inline PlayVolume getDefaultPlayVolume() {
     PlayVolume volume;
-    volume.minX = 0.1f;
+    // 90% coverage (5% margin) - good compromise between
+    // tracking quality and movement freedom
+    volume.minX = 0.05f;  // 5% margin left
+    volume.maxX = 0.95f;  // 5% margin right
+    volume.minY = 0.05f;  // 5% margin top
+    volume.maxY = 0.95f;  // 5% margin bottom
+    volume.minZ = 500.0f;   // 0.5m
+    volume.maxZ = 2500.0f;  // 2.5m
+    return volume;
+}
+
+// Alternative presets (choose one or make configurable)
+inline PlayVolume getConservativePlayVolume() {
+    PlayVolume volume;
+    volume.minX = 0.1f;   // 10% margin (current default)
     volume.maxX = 0.9f;
     volume.minY = 0.1f;
     volume.maxY = 0.9f;
-    volume.minZ = 500.0f;   // 0.5m
-    volume.maxZ = 2500.0f;  // 2.5m
+    volume.minZ = 500.0f;
+    volume.maxZ = 2500.0f;
+    return volume;
+}
+
+inline PlayVolume getFullscreenPlayVolume() {
+    PlayVolume volume;
+    volume.minX = 0.0f;   // No margin (full camera view)
+    volume.maxX = 1.0f;
+    volume.minY = 0.0f;
+    volume.maxY = 1.0f;
+    volume.minZ = 500.0f;
+    volume.maxZ = 2500.0f;
     return volume;
 }
 
