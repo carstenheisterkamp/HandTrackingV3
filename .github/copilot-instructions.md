@@ -9,6 +9,7 @@ Key Rules:
 3. **STAY FOCUSED on the current TODO item**
 4. **ASK before major changes**
 5. **⚠️ NEVER COMMIT WITHOUT USER TESTING** - Wait for explicit "funktioniert" confirmation
+6. **⚠️ NEVER REVERT WITHOUT ASKING** - Bei Problemen erst Fehler analysieren und Lösung versuchen, NICHT einfach rückgängig machen!
 
 ---
 

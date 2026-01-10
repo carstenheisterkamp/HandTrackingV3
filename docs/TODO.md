@@ -25,23 +25,21 @@
 
 **Problem (2026-01-09):**
 - Nur FIST, PEACE, POINTING werden einigermaßen erkannt
-- Andere Gesten (THUMBS_UP, FIVE, etc.) nicht zuverlässig
-- **Ursache:** Fixer Threshold (0.02) funktioniert nicht für alle Entfernungen
+- Andere Gesten (THUMBS_UP, FIVE, etc.) nicht zuverlässig bei allen Entfernungen
 
-**Lösung: Dynamische Thresholds basierend auf Hand-Größe**
-- ✅ Finger-Threshold: 10% der Hand-Größe (clamped 1-3%)
-- ✅ Daumen-Threshold: 15% der Hand-Größe (clamped 1.5-4%)
-- ✅ Debug-Logging für Hand-Größe
+**Lösung: MCP-basiert + Angle-Fallback (2026-01-09):**
+- ✅ **MCP-basierte Primär-Prüfung:**
+  - `tip.y < mcp.y - threshold` = größerer Y-Unterschied als PIP
+  - Robuster bei verschiedenen Entfernungen
+- ✅ **Angle-Fallback bei Ambiguität:**
+  - Wenn MCP-Check nicht eindeutig → Winkel am PIP-Gelenk berechnen
+  - `angle > 145°` = Finger gestreckt
+- ✅ **Verbesserter Daumen-Check:**
+  - 3 Checks: X-Position + Spread von Index + Extension von Wrist
+  - Voting: 2 von 3 müssen passen
+- ✅ Dynamische Thresholds (12% der Hand-Größe)
 
-**Optimale Entfernung für Erkennung:**
-- **Empfohlen: 40-80cm** von der Kamera
-  - Näher: Hand zu groß, Finger können aus dem Bild ragen
-  - Weiter: Hand zu klein, Landmarks ungenau
-- Hand-Größe im Log: `size=0.10-0.15` = optimal
-  - < 0.08 = zu weit
-  - > 0.20 = zu nah
-
-**Nächster Schritt:** Testen mit verschiedenen Entfernungen
+**Nächster Schritt:** Testen - dann erst committen!
 
 ---
 
@@ -52,6 +50,27 @@
 2. ✅ **Gesten-Erkennung** - Y-basierte Logik läuft robust
 3. ✅ **False Positive Filter** - Haar Cascade eliminiert Gesichter
 4. ⬜ **Erweiterung auf 3D** (Stereo Depth) → Phase 3
+
+---
+
+## 📋 Backlog / Später
+
+### 🔌 Service Resilience (LAN/Kamera Reconnect)
+**Problem:** Service crashed oder hängt wenn:
+- LAN-Verbindung zur OAK-D unterbrochen wird
+- Kamera getrennt/reconnected wird
+- Netzwerk kurzzeitig ausfällt
+
+**TODO:**
+- ⬜ Automatische Reconnect-Logik bei Kamera-Disconnect
+- ⬜ Graceful Degradation bei Netzwerkproblemen
+- ⬜ Watchdog für Device-Health
+- ⬜ Retry-Mechanismus mit exponential backoff
+- ⬜ Logging von Connection-Events
+
+**Priorität:** Nach Phase 3 (Stereo Depth)
+
+---
 
 ### Phase 2.6: Multi-Hand Support - ✅ FUNKTIONIERT
 **Was wurde hinzugefügt:**
