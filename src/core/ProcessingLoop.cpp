@@ -499,14 +499,24 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     );
 
                     if (depthMm > 0) {
-                        // Convert mm to meters and normalize (0.5m-3m → 0-1)
-                        palmZ = (depthMm / 1000.0f - 0.5f) / 2.5f;
-                        palmZ = std::max(0.0f, std::min(1.0f, palmZ));
+                        // Convert mm to normalized Z (1.2m-2.8m → 0-1) for Game Volume
+                        // Game Volume: minZ=1200mm, maxZ=2800mm, range=1600mm
+                        //
+                        // IMPORTANT: Normalized (0-1) coordinates allow flexible scaling in Game Engine!
+                        // Physical 1.6m depth can map to ANY virtual size in UE:
+                        //   - 1:1   → 1.6m virtual (realistic)
+                        //   - 10:1  → 16m virtual (large world)
+                        //   - 100:1 → 160m virtual ("giant mode")
+                        //   - Custom asymmetric scaling per axis
+                        // See docs/OSC_QUICK_REFERENCE.md for UE mapping examples
+                        palmZ = (depthMm - 1200.0f) / 1600.0f;
+                        palmZ = std::max(0.0f, std::min(1.0f, palmZ));  // Clamp to [0,1]
 
                         // Debug log (every 30 frames)
                         static int depthLogCounter = 0;
                         if (++depthLogCounter % 30 == 1) {
-                            Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (Z=", palmZ, ")");
+                            Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (",
+                                        depthMm / 1000.0f, "m) → Z=", palmZ);
                         }
                     }
                 }

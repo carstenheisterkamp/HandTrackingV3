@@ -210,26 +210,214 @@ Fernere Linie (2.5m): ~3.6m × 2.0m Rechteck
 
 ## 🎮 Game Engine Integration (Unreal Engine)
 
-### Koordinaten-Transformation: OSC → Unreal Engine
+### 🎯 Konzept: Normalisierte Koordinaten → Flexible Volumina
 
-```cpp
-// OSC → UE World Space (cm)
-Hand.Location.X = OSC_Z * 300.0f;          // Tiefe: 0-3m → 0-300cm
-Hand.Location.Y = OSC_X * 800.0f;          // Horizontal: 0-1 → 0-800cm
-Hand.Location.Z = (1.0f - OSC_Y) * 600.0f; // Vertikal: 0-1 → 600-0cm (invertiert)
+**OSC sendet normalisierte Koordinaten (0.0 - 1.0):**
+- Unabhängig von physischen Dimensionen
+- Flexibles Mapping auf beliebige virtuelle Größen
+- **1m physisch kann 100m virtuell sein** oder jede andere Größe!
 
-// Velocity Transformation (mm/s → cm/s)
-Hand.Velocity.X = OSC_VZ * 0.1f;  // Tiefe
-Hand.Velocity.Y = OSC_VX * 0.1f;  // Horizontal
-Hand.Velocity.Z = -OSC_VY * 0.1f; // Vertikal (invertiert)
+**Beispiel:**
+```
+Physischer Raum (Game Volume):
+├─ X: 0-1 normalized → ~3.2m breit @ 2m
+├─ Y: 0-1 normalized → ~1.8m hoch @ 2m
+└─ Z: 0-1 normalized → 1.2m-2.8m Tiefe (1.6m range)
+
+Virtuelles UE Volume (frei skalierbar):
+├─ X: 0-1 → 1000cm (10m) virtuell
+├─ Y: 0-1 → 2000cm (20m) virtuell
+└─ Z: 0-1 → 500cm (5m) virtuell
+
+→ 1.6m physische Tiefe = 5m virtuelle Tiefe (3.1x Skalierung!)
 ```
 
-**Warum Z invertiert?**
-- OSC Y-Koordinate: `0.0 = oben, 1.0 = unten` (Bildschirm-Koordinaten)
-- Unreal Z-Koordinate: `0 = unten, höher = oben` (World Space)
-- `(1.0f - OSC_Y)` spiegelt die Achse: oben (0) → oben (600), unten (1) → unten (0)
+### Koordinaten-Transformation: Flexibles Volume-Mapping
 
-### OSC Empfang in Unreal (C++)
+**Methode 1: Direkte Skalierung (Einfach)**
+
+```cpp
+// Define your virtual play volume size (in UE units, usually cm)
+FVector VolumeSize(1000.0f, 2000.0f, 500.0f);  // 10m × 20m × 5m virtuell
+FVector VolumeOrigin(0.0f, 0.0f, 0.0f);        // Startpunkt
+
+// OSC → UE World Space
+Hand.Location.X = VolumeOrigin.X + (OSC_Z * VolumeSize.X);          // Tiefe
+Hand.Location.Y = VolumeOrigin.Y + (OSC_X * VolumeSize.Y);          // Horizontal
+Hand.Location.Z = VolumeOrigin.Z + ((1.0f - OSC_Y) * VolumeSize.Z); // Vertikal (invertiert)
+
+// Velocity: Skaliert mit Volume-Größe
+// OSC Velocity in mm/s → UE Velocity in cm/s
+float VelocityScaleX = VolumeSize.X / 1600.0f;  // 1600mm = physische Z-Range
+float VelocityScaleY = VolumeSize.Y / 3200.0f;  // ~3200mm = physische X-Range @ 2m
+float VelocityScaleZ = VolumeSize.Z / 1800.0f;  // ~1800mm = physische Y-Range @ 2m
+
+Hand.Velocity.X = OSC_VZ * VelocityScaleX * 0.1f;  // Tiefe
+Hand.Velocity.Y = OSC_VX * VelocityScaleY * 0.1f;  // Horizontal
+Hand.Velocity.Z = -OSC_VY * VelocityScaleZ * 0.1f; // Vertikal (invertiert)
+```
+
+**Methode 2: Box Component als Referenz (Empfohlen)**
+
+```cpp
+// In Unreal: Erstelle Box Component "PlayVolumeBox" im Level
+// Größe: Beliebig! (z.B. 1000×2000×500 für 10m×20m×5m)
+
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hand Tracking")
+UBoxComponent* PlayVolumeBox;
+
+void AHandTracker::OnPalmReceived(const FOSCMessage& Message, const FString& IPAddress, int32 Port)
+{
+    if (Message.GetArguments().Num() >= 3 && PlayVolumeBox)
+    {
+        float OSC_X = Message.GetArguments()[0].GetFloat();
+        float OSC_Y = Message.GetArguments()[1].GetFloat();
+        float OSC_Z = Message.GetArguments()[2].GetFloat();
+        
+        // Get box bounds (automatisch aus Editor-Einstellungen)
+        FVector BoxExtent = PlayVolumeBox->GetScaledBoxExtent();
+        FVector BoxOrigin = PlayVolumeBox->GetComponentLocation();
+        
+        // Map OSC (0-1) auf Box-Volumen
+        Hand0Position.X = BoxOrigin.X + (OSC_Z * 2.0f - 1.0f) * BoxExtent.X;
+        Hand0Position.Y = BoxOrigin.Y + (OSC_X * 2.0f - 1.0f) * BoxExtent.Y;
+        Hand0Position.Z = BoxOrigin.Z + ((1.0f - OSC_Y) * 2.0f - 1.0f) * BoxExtent.Z;
+        
+        UE_LOG(LogTemp, Log, TEXT("Hand Position: %s"), *Hand0Position.ToString());
+    }
+}
+```
+
+**Warum Y invertiert?**
+- OSC Y-Koordinate: `0.0 = oben, 1.0 = unten` (Kamera/Bildschirm)
+- Unreal Z-Koordinate: `0 = unten, höher = oben` (World Space)
+- `(1.0f - OSC_Y)` spiegelt die Achse
+
+### Praktische Skalierungs-Beispiele
+
+**Beispiel 1: Realistisches 1:1 Mapping**
+```cpp
+// Physisches Game Volume: 1.6m Tiefe × 3.2m Breite × 1.8m Höhe
+// Virtuelles Volume:       1.6m Tiefe × 3.2m Breite × 1.8m Höhe (1:1)
+
+FVector VolumeSize(160.0f, 320.0f, 180.0f);  // in cm, exakt physisch
+
+Hand.Location = VolumeOrigin + FVector(
+    OSC_Z * 160.0f,
+    OSC_X * 320.0f,
+    (1.0f - OSC_Y) * 180.0f
+);
+
+// → Spieler-Hand bewegt sich 1:1 mit virtueller Hand
+```
+
+**Beispiel 2: "Giant Mode" - 100× Skalierung**
+```cpp
+// Physisches Game Volume: 1.6m Tiefe
+// Virtuelles Volume:       160m Tiefe (100× größer!)
+
+FVector VolumeSize(16000.0f, 32000.0f, 18000.0f);  // 160m × 320m × 180m
+
+Hand.Location = VolumeOrigin + FVector(
+    OSC_Z * 16000.0f,
+    OSC_X * 32000.0f,
+    (1.0f - OSC_Y) * 18000.0f
+);
+
+// → 1cm Handbewegung = 1m virtuelle Bewegung!
+// → Perfekt für riesige Welten, präzise Kontrolle
+```
+
+**Beispiel 3: "Microscope Mode" - 0.01× Skalierung**
+```cpp
+// Physisches Game Volume: 1.6m Tiefe
+// Virtuelles Volume:       1.6cm Tiefe (100× kleiner!)
+
+FVector VolumeSize(1.6f, 3.2f, 1.8f);  // 1.6cm × 3.2cm × 1.8cm
+
+Hand.Location = VolumeOrigin + FVector(
+    OSC_Z * 1.6f,
+    OSC_X * 3.2f,
+    (1.0f - OSC_Y) * 1.8f
+);
+
+// → 1m Handbewegung = 1cm virtuelle Bewegung
+// → Perfekt für Mikroskop-Simulation, Präzisions-Arbeit
+```
+
+**Beispiel 4: Asymmetrische Skalierung**
+```cpp
+// Tiefe: 10× größer (16m)
+// Breite: 5× größer (16m)
+// Höhe: 1:1 (1.8m)
+
+FVector VolumeSize(1600.0f, 1600.0f, 180.0f);
+
+Hand.Location = VolumeOrigin + FVector(
+    OSC_Z * 1600.0f,   // 10× Tiefe
+    OSC_X * 1600.0f,   // 5× Breite
+    (1.0f - OSC_Y) * 180.0f  // 1:1 Höhe
+);
+
+// → Verschiedene Achsen unterschiedlich skaliert
+// → Nützlich für nicht-kubische Spielwelten
+```
+
+### Volume-Visualisierung in Unreal Editor
+
+**Schritt 1: Box Component erstellen**
+```cpp
+// In BeginPlay() oder Constructor
+PlayVolumeBox = CreateDefaultSubobject<UBoxComponent>(TEXT("PlayVolume"));
+PlayVolumeBox->SetBoxExtent(FVector(500.0f, 1000.0f, 250.0f));  // Halbe Größe!
+PlayVolumeBox->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+PlayVolumeBox->SetHiddenInGame(false);  // Im Editor sichtbar
+PlayVolumeBox->ShapeColor = FColor::Green;
+```
+
+**Schritt 2: Im Editor anpassen**
+- Select "PlayVolumeBox" Component
+- Adjust Scale/Size im Details Panel
+- Move/Rotate nach Bedarf
+- **Größe ist flexibel!** (1m bis 1000m)
+
+**Schritt 3: Debug-Visualisierung**
+```cpp
+void AHandTracker::DrawDebugVolume()
+{
+    if (PlayVolumeBox)
+    {
+        FVector Extent = PlayVolumeBox->GetScaledBoxExtent();
+        FVector Origin = PlayVolumeBox->GetComponentLocation();
+        
+        // Draw box outline
+        DrawDebugBox(
+            GetWorld(),
+            Origin,
+            Extent,
+            FColor::Green,
+            false,  // Persistent
+            -1.0f,  // Lifetime
+            0,      // Depth priority
+            2.0f    // Thickness
+        );
+        
+        // Draw current hand position
+        if (Hand0Detected)
+        {
+            DrawDebugSphere(
+                GetWorld(),
+                Hand0Position,
+                10.0f,
+                12,
+                FColor::Red,
+                false,
+                -1.0f
+            );
+        }
+    }
+}
+```
 
 **1. OSC Plugin aktivieren:**
 - Plugins → OSC → Enable
