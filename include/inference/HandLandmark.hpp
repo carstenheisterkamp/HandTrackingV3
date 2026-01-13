@@ -18,7 +18,7 @@ namespace inference {
 class HandLandmark {
 public:
     struct Result {
-        std::array<core::TrackingResult::NormalizedPoint, 21> landmarks;
+        std::array<core::Point3D, 21> landmarks;
         float handedness;       // 0 = Left, 1 = Right
         float presence;         // Hand presence confidence
         float palmCenterX;      // Palm center in original frame coords

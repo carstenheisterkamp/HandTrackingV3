@@ -22,6 +22,7 @@ namespace core {
     class HandTracker;
     class GestureFSM;
     class StereoDepth;
+    class SessionFSM;
     struct PlayVolume;
 }
 
@@ -70,6 +71,24 @@ public:
         return "LITE";
     }
 
+    /**
+     * Set ROI configuration (for coordinate normalization)
+     * @param useROI: Whether ROI cropping is enabled
+     * @param roiSize: Size of ROI quadrat (e.g., 1080 for 1080×1080)
+     */
+    void setROIConfig(bool useROI, int roiSize) {
+        _useROI = useROI;
+        _roiSize = roiSize;
+        if (useROI) {
+            // Calculate ROI offsets from full 1920×1080 frame
+            _roiOffsetX = (1920 - roiSize) / 2;  // Center horizontally
+            _roiOffsetY = (1080 - roiSize) / 2;  // Center vertically
+        } else {
+            _roiOffsetX = 0;
+            _roiOffsetY = 0;
+        }
+    }
+
 private:
     void loop();
     void processFrame(Frame* frame);
@@ -86,6 +105,7 @@ private:
     static constexpr int MAX_HANDS = 2;
     std::array<std::unique_ptr<HandTracker>, MAX_HANDS> _handTrackers;
     std::array<std::unique_ptr<GestureFSM>, MAX_HANDS> _gestureFSMs;
+    std::array<std::unique_ptr<SessionFSM>, MAX_HANDS> _sessionFSMs;  // Phase 4
     std::unique_ptr<StereoDepth> _stereoDepth;
 
     // Phase 4: Play Volume for filtering
@@ -122,6 +142,7 @@ private:
         float deltaX = 0.0f, deltaY = 0.0f, deltaZ = 0.0f;  // Acceleration/Delta
         std::string gesture = "None";
         bool vipLocked = false;
+        bool isRightHand = false;  // Phase 4: Handedness for visualization
 
         // Previous velocity for delta calculation
         float prevVelX = 0.0f, prevVelY = 0.0f, prevVelZ = 0.0f;
@@ -133,8 +154,18 @@ private:
     std::chrono::steady_clock::time_point _lastPerfUpdate;
 
     // Model Paths (configurable for lite vs full models)
-    std::string _palmModelPath = "models/palm_detection.onnx";
-    std::string _landmarkModelPath = "models/hand_landmark.onnx";
+    // TensorRT auto-compiles .onnx → .engine (cached in build/models/)
+    // CMake preserves .engine files across builds for fast startup
+    // OPTIMIZED FOR 2m DISTANCE: FULL model + 1024x576 resolution
+    // Trade-off: Accuracy > Speed (FULL is more robust for small hands @ 2m)
+    std::string _palmModelPath = "models/palm_detection_full.onnx";
+    std::string _landmarkModelPath = "models/hand_landmark_full.onnx";
+
+    // ROI Configuration
+    bool _useROI = false;
+    int _roiSize = 1080;
+    int _roiOffsetX = 0;
+    int _roiOffsetY = 0;
 };
 
 } // namespace core

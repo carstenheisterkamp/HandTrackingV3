@@ -1,5 +1,7 @@
 #!/bin/bash
-# Compile Neural Network Blobs with optimal SHAVE configuration
+# ⚠️ DEPRECATED - This script is for OAK-D on-device inference (Myriad X VPU)
+# We use TensorRT on Jetson instead - .blob files are NOT needed!
+# Use convert_to_onnx.py to generate .onnx files, TensorRT compiles them to .engine automatically
 # Target: 6 SHAVEs per network (2 NNs × 6 = 12 total, matching Myriad X capacity)
 
 set -e

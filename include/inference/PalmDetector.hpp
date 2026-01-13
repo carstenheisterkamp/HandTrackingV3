@@ -76,6 +76,18 @@ public:
      */
     [[nodiscard]] bool isInitialized() const { return initialized_; }
 
+    /**
+     * Get detected face rectangles (normalized coordinates) for visualization
+     * @return Vector of face rects in pixel coordinates or empty if none detected
+     */
+    [[nodiscard]] const std::vector<cv::Rect>& getFaceRects() const { return lastFaceRects_; }
+
+    /**
+     * Get frame dimensions used for last face detection
+     */
+    [[nodiscard]] int getFaceFrameWidth() const { return lastFaceFrameWidth_; }
+    [[nodiscard]] int getFaceFrameHeight() const { return lastFaceFrameHeight_; }
+
 private:
     Config config_;
     bool initialized_ = false;

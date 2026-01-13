@@ -16,12 +16,15 @@
 #include "core/HandTracker.hpp"
 #include "core/PlayVolume.hpp"
 #include "core/GestureFSM.hpp"
+#include "core/SessionFSM.hpp"
 #include "core/StereoDepth.hpp"
 
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
 #include <opencv2/imgproc.hpp>
+#include <unistd.h>
+#include <limits.h>
 
 #ifdef ENABLE_TENSORRT
 #include "inference/PalmDetector.hpp"
@@ -31,8 +34,58 @@
 #ifdef ENABLE_CUDA
 #include "core/StereoKernel.hpp"
 #include <nppi_color_conversion.h>
+#include <npp.h>
 #include <cuda_runtime.h>
 #endif
+
+// Hilfsfunktion: robuste Auflösung von Modellpfaden
+static std::string resolveModelPath(const std::string& inputPath) {
+    namespace fs = std::filesystem;
+    try {
+        fs::path in(inputPath);
+        // Wenn absolut und vorhanden, direkt zurückgeben
+        if (in.is_absolute() && fs::exists(in)) return in.string();
+
+        // Kandidatenliste aufbauen
+        std::vector<fs::path> candidates;
+        fs::path filename = in.filename();
+
+        // 1) relativ zum aktuellen Arbeitsverzeichnis
+        candidates.push_back(fs::current_path() / in);
+        candidates.push_back(fs::current_path() / "models" / filename);
+
+        // 2) relativ zum Executable-Verzeichnis
+        char buf[PATH_MAX];
+        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (len > 0) {
+            buf[len] = '\0';
+            fs::path exePath(buf);
+            fs::path exeDir = exePath.parent_path();
+            candidates.push_back(exeDir / in);
+            candidates.push_back(exeDir / "models" / filename);
+            candidates.push_back(exeDir / ".." / in);
+            candidates.push_back(exeDir / ".." / "models" / filename);
+        }
+
+        // 3) Standard-Projektpfad auf Jetson
+        candidates.push_back(fs::path("/home/nvidia/dev/HandTrackingV3") / in);
+        candidates.push_back(fs::path("/home/nvidia/dev/HandTrackingV3/models") / filename);
+
+        for (const auto& c : candidates) {
+            if (fs::exists(c)) {
+                core::Logger::info("Resolved model path: '", inputPath, "' -> '", c.string(), "'");
+                return c.string();
+            }
+        }
+
+        // Nichts gefunden, original zurückgeben
+        core::Logger::warn("Could not resolve model path: ", inputPath, ". Using as-is.");
+        return inputPath;
+    } catch (const std::exception& e) {
+        core::Logger::warn("resolveModelPath exception: ", e.what());
+        return inputPath;
+    }
+}
 
 namespace core {
 
@@ -48,12 +101,12 @@ ProcessingLoop::ProcessingLoop(std::shared_ptr<AppProcessingQueue> inputQueue,
     for (int i = 0; i < MAX_HANDS; ++i) {
         _handTrackers[i] = std::make_unique<HandTracker>();
         _gestureFSMs[i] = std::make_unique<GestureFSM>();
+        _sessionFSMs[i] = std::make_unique<SessionFSM>();  // Phase 4
     }
     _stereoDepth = std::make_unique<StereoDepth>();
 
-    // Phase 4: Initialize Play Volume for standing player at 2m
-    // Optimized for 220cm × 125cm display, arm reach coverage
-    _playVolume = std::make_unique<PlayVolume>(getGamePlayVolume());
+    // Phase 4: Initialize Play Volume with 5% margin (90% of image size)
+    _playVolume = std::make_unique<PlayVolume>(getDefaultPlayVolume());
     Logger::info("Play Volume initialized (GAME): ",
                  _playVolume->getWidth() * 100, "% x ",
                  _playVolume->getHeight() * 100, "% coverage, ",
@@ -127,6 +180,10 @@ void ProcessingLoop::loop() {
             inference::HandLandmark::Config landmarkConfig;
             landmarkConfig.modelPath = _landmarkModelPath;  // Use configurable path
 
+            // Pfade robust auflösen (WorkingDirectory kann 'build' sein)
+            palmConfig.modelPath = resolveModelPath(palmConfig.modelPath);
+            landmarkConfig.modelPath = resolveModelPath(landmarkConfig.modelPath);
+
             // Check if ONNX files exist
             Logger::info("🔍 Checking for ONNX models...");
             Logger::info("   Palm model path: ", palmConfig.modelPath);
@@ -193,30 +250,120 @@ void ProcessingLoop::loop() {
     }
 #endif
 
+    Frame* lastFrame = nullptr;
     while (_running) {
         Frame* frame = nullptr;
-        if (_inputQueue->pop_front(frame)) {
-            if (frame) {
-                processFrame(frame);
-                _framePool->release(frame);
+
+        // OPTIMIZATION: Non-blocking pop - nie warten auf Queue
+        // Falls kein Frame verfügbar → verwende letzten Frame (Predictive Tracking)
+        bool isNewFrame = _inputQueue->pop_front(frame);
+
+        if (isNewFrame && frame) {
+            // Neuer Frame vom OAK-D → Normal processing
+            processFrame(frame);
+            // Nur neue Frames für FPS-Zählung verwenden!
+            // Wird weiter unten in processFrame() gemacht
+            if (lastFrame) {
+                _framePool->release(lastFrame);
             }
+            lastFrame = frame;  // Cache für next iteration
+        } else if (lastFrame) {
+            // Kein neuer Frame → verwende cached Frame mit Prediction
+            // Kalman-Tracker extrapoliert Position
+            // WICHTIG: Wird für FPS NICHT gezählt (siehe processFrame)
+            processFrame(lastFrame);
         } else {
+            // Startup: Noch kein Frame → kurz warten
             std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
+    }
+
+    // Cleanup
+    if (lastFrame) {
+        _framePool->release(lastFrame);
     }
 }
 
 void ProcessingLoop::processFrame(Frame* frame) {
     auto frameStart = std::chrono::high_resolution_clock::now();
 
+    // Performance profiling accumulators (static for accumulation between frames)
+    static long long totalNV12Time = 0;
+    static long long totalPalmTime = 0;
+    static long long totalLandmarkTime = 0;
+    static long long totalStereoTime = 0;
+    static long long totalDrawTime = 0;
+    static long long totalJpegTime = 0;
+    static long long totalFrameTime = 0;
+    static long long totalQueueWaitTime = 0;  // NEW: Queue latency tracking
+    static int profileFrameCount = 0;
+
     // ═══════════════════════════════════════════════════════════
-    // FPS Tracking
+    // FPS Tracking with DETAILED PERFORMANCE BREAKDOWN
+    // WICHTIG: Nur echte neue Frames vom OAK-D zählen!
+    // (Nicht Predictive-Tracked cached Frames)
     // ═══════════════════════════════════════════════════════════
-    _frameCount++;
+
+    // Check ob das ein neuer Frame vom OAK-D ist oder ein Re-Processed cached Frame
+    static Frame* lastProcessedFrame = nullptr;
+    bool isNewFrameFromCamera = (frame != lastProcessedFrame);
+    lastProcessedFrame = frame;
+
+    if (isNewFrameFromCamera) {
+        // Nur echte neue Frames zählen!
+        _frameCount++;
+    }
+    profileFrameCount++;
+
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - _lastFpsTime).count();
-    if (elapsed >= 2000) {
+    if (elapsed >= 2000 && isNewFrameFromCamera) {
+        // Nur bei neuen Frames und mindestens 2 Sekunden vergangen
         _currentFps = _frameCount * 1000.0f / elapsed;
+
+        // Calculate average time per component (in ms)
+        float avgNV12 = profileFrameCount > 0 ? totalNV12Time / (float)profileFrameCount / 1000.0f : 0;
+        float avgPalm = profileFrameCount > 0 ? totalPalmTime / (float)profileFrameCount / 1000.0f : 0;
+        float avgLandmark = profileFrameCount > 0 ? totalLandmarkTime / (float)profileFrameCount / 1000.0f : 0;
+        float avgStereo = profileFrameCount > 0 ? totalStereoTime / (float)profileFrameCount / 1000.0f : 0;
+        float avgDraw = profileFrameCount > 0 ? totalDrawTime / (float)profileFrameCount / 1000.0f : 0;
+        float avgJpeg = profileFrameCount > 0 ? totalJpegTime / (float)profileFrameCount / 1000.0f : 0;
+        float avgQueueWait = profileFrameCount > 0 ? totalQueueWaitTime / (float)profileFrameCount / 1000.0f : 0;
+        float totalMeasured = avgNV12 + avgPalm + avgLandmark + avgStereo + avgDraw + avgJpeg + avgQueueWait;
+        float frameBudget = 1000.0f / _currentFps;
+        float avgFrameMs = profileFrameCount > 0 ? totalFrameTime / (float)profileFrameCount / 1000.0f : 0;
+        float unaccounted = avgFrameMs - totalMeasured;  // time spent elsewhere (scheduling, queues, etc)
+
+        Logger::info("═══ V3 PERFORMANCE BREAKDOWN ═══");
+        Logger::info("FPS: ", _currentFps, " (OSC: 28 Hz fixed)");
+        Logger::info("Frame: ", frame->width, "x", frame->height);
+        Logger::info("Models: ", getModelType(), " (", _palmModelPath.find("_full") != std::string::npos ? "FULL" : "LITE", ")");
+        Logger::info("───────────────────────────────");
+        Logger::info("⏱️  Timing per Frame (average ms):");
+        Logger::info("  Queue Wait:    ", avgQueueWait, " ms");
+        Logger::info("  NV12→BGR:      ", avgNV12, " ms");
+        Logger::info("  Palm Detect:   ", avgPalm, " ms");
+        Logger::info("  Landmark:      ", avgLandmark, " ms");
+        Logger::info("  Stereo Depth:  ", avgStereo, " ms");
+        Logger::info("  Draw Overlay:  ", avgDraw, " ms");
+        Logger::info("  JPEG Encode:   ", avgJpeg, " ms");
+        Logger::info("  ───────────────");
+        Logger::info("  Total Measured:", totalMeasured, " ms");
+        Logger::info("  Avg Frame Time:", avgFrameMs, " ms");
+        Logger::info("  Frame Budget:  ", frameBudget, " ms");
+        Logger::info("  Unaccounted:   ", unaccounted, " ms");
+
+        // Reset accumulators
+        totalNV12Time = 0;
+        totalPalmTime = 0;
+        totalLandmarkTime = 0;
+        totalStereoTime = 0;
+        totalDrawTime = 0;
+        totalJpegTime = 0;
+        totalFrameTime = 0;
+        totalQueueWaitTime = 0;
+        profileFrameCount = 0;
+
 
         Logger::info("═══ V3 PROCESSING STATS ═══");
         Logger::info("FPS: ", _currentFps);
@@ -243,12 +390,25 @@ void ProcessingLoop::processFrame(Frame* frame) {
         _lastFpsTime = now;
     }
 
+    // Wenn kein neuer Frame vom OAK-D → skip rest (nur Kalman prediction)
+    if (!isNewFrameFromCamera) {
+        // Predictive Tracking ohne Inference
+        for (int h = 0; h < MAX_HANDS; ++h) {
+            _handTrackers[h]->predict(0.033f);  // Predict mit 30ms Delta
+        }
+        return;  // Nichts mehr zu tun
+    }
+
     // ═══════════════════════════════════════════════════════════
     // Step 1: Convert NV12 to BGR for visualization
+    // OPTIMIZATION: Skip komplett wenn kein MJPEG Client connected
     // ═══════════════════════════════════════════════════════════
-    bool shouldRenderDebug = _mjpegServer && _mjpegServer->hasClients();
+    static bool headlessMode = std::getenv("HANDTRACKING_HEADLESS") != nullptr;
+    bool hasClients = _mjpegServer && _mjpegServer->hasClients();
+    bool shouldRenderDebug = !headlessMode && hasClients;
     cv::Mat debugFrame;
 
+    auto nv12Start = std::chrono::high_resolution_clock::now();
     if (shouldRenderDebug) {
         size_t requiredSize = frame->width * frame->height * 3;
         if (!_bgrBuffer || _bgrBufferSize < requiredSize) {
@@ -285,6 +445,8 @@ void ProcessingLoop::processFrame(Frame* frame) {
         cv::cvtColor(nv12, debugFrame, cv::COLOR_YUV2BGR_NV12);
 #endif
     }
+    auto nv12End = std::chrono::high_resolution_clock::now();
+    totalNV12Time += std::chrono::duration_cast<std::chrono::microseconds>(nv12End - nv12Start).count();
 
     // ═══════════════════════════════════════════════════════════
     // Step 2: TensorRT Inference (Palm + Landmarks) - 2 HANDS
@@ -304,13 +466,31 @@ void ProcessingLoop::processFrame(Frame* frame) {
             Logger::info("🔍 Running Palm Detection inference (attempt ", inferenceAttempts, ")...");
         }
 
-        // Palm Detection - detect ALL hands (up to 2)
-        auto palmDetections = _palmDetector->detectAll(
-            frame->data.get(),
-            static_cast<int>(frame->width),
-            static_cast<int>(frame->height),
-            MAX_HANDS
-        );
+        // OPTIMIZATION: Run Palm Detection every 3rd frame (skip strategy)
+        // Hands don't move significantly between frames, so we can reuse detections
+        // This saves ~33% of Palm Inference time (most expensive single operation)
+        // Client doesn't know - OSC stays 28 Hz with cached data
+        static int palmSkipCounter = 0;
+        static std::vector<inference::PalmDetector::Detection> cachedPalmDetections;
+
+        std::vector<inference::PalmDetector::Detection> palmDetections;
+
+        auto palmStart = std::chrono::high_resolution_clock::now();
+        if (palmSkipCounter++ % 3 == 0) {
+            // Run Palm Detection (every 3rd frame)
+            palmDetections = _palmDetector->detectAll(
+                frame->data.get(),
+                static_cast<int>(frame->width),
+                static_cast<int>(frame->height),
+                MAX_HANDS
+            );
+            cachedPalmDetections = palmDetections;  // Cache for next 2 frames
+        } else {
+            // Skip Palm Detection, reuse cached results
+            palmDetections = cachedPalmDetections;
+        }
+        auto palmEnd = std::chrono::high_resolution_clock::now();
+        totalPalmTime += std::chrono::duration_cast<std::chrono::microseconds>(palmEnd - palmStart).count();
 
         // ═══════════════════════════════════════════════════════════
         // Phase 4: Volume-Filtering
@@ -320,7 +500,22 @@ void ProcessingLoop::processFrame(Frame* frame) {
         std::vector<inference::PalmDetector::Detection> filteredDetections;
         int rejectedCount = 0;
 
-        for (const auto& palm : palmDetections) {
+        for (auto palm : palmDetections) {
+            // ROI Coordinate Denormalization
+            // If ROI mode: Palm coords are (0-1) in 1080×1080 ROI quadrat
+            // We need to map them back to Full 1920×1080 (0-1) for Kalman tracking
+            if (_useROI) {
+                // palm.x, palm.y are in ROI space (0-1)
+                // Convert to full frame pixel coords:
+                // pixel_x = palm.x * _roiSize + _roiOffsetX
+                // pixel_y = palm.y * _roiSize + _roiOffsetY
+                // Then normalize back to (0-1):
+                // norm_x = pixel_x / 1920
+                // norm_y = pixel_y / 1080
+                palm.x = (palm.x * _roiSize + _roiOffsetX) / 1920.0f;
+                palm.y = (palm.y * _roiSize + _roiOffsetY) / 1080.0f;
+            }
+
             // Check if palm center is inside 2D play volume
             // Note: Z-check will be done after stereo depth computation
             if (_playVolume->contains2D(palm.x, palm.y)) {
@@ -371,18 +566,52 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
         // Process each detected hand
         int handCount = 0;
+
+        // OPTIMIZATION: Landmark Skip Strategy (every 2nd frame)
+        // Reduces Landmark Inference cost by 50% (~5ms savings)
+        static int landmarkSkipCounter = 0;
+        static std::vector<std::optional<inference::HandLandmark::Result>> cachedLandmarks(MAX_HANDS);
+        bool shouldRunLandmark = (landmarkSkipCounter++ % 2 == 0);
+
         for (size_t h = 0; h < palmDetections.size() && h < MAX_HANDS; ++h) {
             const auto& palmDetection = palmDetections[h];
 
-            // Hand Landmark Inference
-            auto landmarks = _handLandmark->infer(
-                frame->data.get(),
-                static_cast<int>(frame->width),
-                static_cast<int>(frame->height),
-                palmDetection
-            );
+            // Hand Landmark Inference - WITH TIMING AND SKIP STRATEGY
+            auto landmarkStart = std::chrono::high_resolution_clock::now();
+            std::optional<inference::HandLandmark::Result> landmarks;
+
+            if (shouldRunLandmark) {
+                // Run Landmark Inference (every 2nd frame)
+                landmarks = _handLandmark->infer(
+                    frame->data.get(),
+                    static_cast<int>(frame->width),
+                    static_cast<int>(frame->height),
+                    palmDetection
+                );
+                cachedLandmarks[h] = landmarks;  // Cache for next frame
+            } else {
+                // Skip Landmark Inference, reuse cached results
+                landmarks = cachedLandmarks[h];
+            }
+            auto landmarkEnd = std::chrono::high_resolution_clock::now();
+            totalLandmarkTime += std::chrono::duration_cast<std::chrono::microseconds>(landmarkEnd - landmarkStart).count();
 
             if (landmarks) {
+                // ROI Coordinate Denormalization for Landmarks
+                // If ROI mode: All landmark coords are (0-1) in 1080×1080 ROI quadrat
+                // Convert back to Full 1920×1080 (0-1) for Kalman tracking
+                if (_useROI) {
+                    for (auto& lm : landmarks->landmarks) {
+                        // Map from ROI space to Full frame space
+                        lm.x = (lm.x * _roiSize + _roiOffsetX) / 1920.0f;
+                        lm.y = (lm.y * _roiSize + _roiOffsetY) / 1080.0f;
+                        // Z coordinate unchanged (depth)
+                    }
+                    // Also denormalize palm center
+                    landmarks->palmCenterX = (landmarks->palmCenterX * _roiSize + _roiOffsetX) / 1920.0f;
+                    landmarks->palmCenterY = (landmarks->palmCenterY * _roiSize + _roiOffsetY) / 1080.0f;
+                }
+
                 // Draw bounding box around ENTIRE hand (all landmarks)
                 if (!debugFrame.empty()) {
                     cv::Scalar boxColor = (h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0);
@@ -479,37 +708,39 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
                 // Kalman + Gesture (per hand)
                 float palmZ = 0.0f;
+                float depthMm = -1.0f;  // Store depth for display
 
-                // Phase 3: Stereo Depth - compute Z at palm center
+                // Phase 3: Stereo Depth - compute Z at palm center - WITH TIMING AND CACHING
+                // OPTIMIZATION: Cache depth for 3 frames (depth changes slowly)
+                static int stereoSkipCounter = 0;
+                static float cachedDepth[MAX_HANDS] = {-1.0f, -1.0f};
+                bool shouldRunStereo = (stereoSkipCounter++ % 3 == 0);
+
+                auto stereoStart = std::chrono::high_resolution_clock::now();
                 if (_stereoInitialized && frame->hasStereoData &&
                     frame->monoLeftData && frame->monoRightData) {
 
-                    // Convert normalized palm coords to mono image pixel coords
-                    // Note: Mono is 640x400, RGB preview is 640x360
-                    int palmPxX = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
-                    int palmPxY = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
+                    if (shouldRunStereo) {
+                        // Compute depth (every 3rd frame)
+                        int palmPxX = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
+                        int palmPxY = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
 
-                    // Get depth at palm center (returns mm, or -1 if invalid)
-                    float depthMm = _stereoDepth->getDepthAtPoint(
-                        frame->monoLeftData.get(),
-                        frame->monoRightData.get(),
-                        static_cast<int>(frame->monoWidth),
-                        static_cast<int>(frame->monoHeight),
-                        palmPxX, palmPxY
-                    );
+                        depthMm = _stereoDepth->getDepthAtPoint(
+                            frame->monoLeftData.get(),
+                            frame->monoRightData.get(),
+                            static_cast<int>(frame->monoWidth),
+                            static_cast<int>(frame->monoHeight),
+                            palmPxX, palmPxY
+                        );
+                        cachedDepth[h] = depthMm;  // Cache for next 2 frames
+                    } else {
+                        // Use cached depth
+                        depthMm = cachedDepth[h];
+                    }
 
                     if (depthMm > 0) {
-                        // Convert mm to normalized Z (1.2m-2.8m → 0-1) for Game Volume
-                        // Game Volume: minZ=1200mm, maxZ=2800mm, range=1600mm
-                        //
-                        // IMPORTANT: Normalized (0-1) coordinates allow flexible scaling in Game Engine!
-                        // Physical 1.6m depth can map to ANY virtual size in UE:
-                        //   - 1:1   → 1.6m virtual (realistic)
-                        //   - 10:1  → 16m virtual (large world)
-                        //   - 100:1 → 160m virtual ("giant mode")
-                        //   - Custom asymmetric scaling per axis
-                        // See docs/OSC_QUICK_REFERENCE.md for UE mapping examples
-                        palmZ = (depthMm - 1200.0f) / 1600.0f;
+                        // Convert mm to normalized Z (0.0 - 1.0) for Game Volume
+                        palmZ = (depthMm - Z_MIN_MM) / Z_RANGE_MM;
                         palmZ = std::max(0.0f, std::min(1.0f, palmZ));  // Clamp to [0,1]
 
                         // Debug log (every 30 frames)
@@ -518,14 +749,21 @@ void ProcessingLoop::processFrame(Frame* frame) {
                             Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (",
                                         depthMm / 1000.0f, "m) → Z=", palmZ);
                         }
+
+                        // Display depth at hand in preview (before frame flip)
+                        if (!debugFrame.empty()) {
+                            // ...existing depth display code...
+                        }
                     }
                 }
+                auto stereoEnd = std::chrono::high_resolution_clock::now();
+                totalStereoTime += std::chrono::duration_cast<std::chrono::microseconds>(stereoEnd - stereoStart).count();
 
                 Point3D palm3D = {landmarks->palmCenterX, landmarks->palmCenterY, palmZ};
                 _handTrackers[h]->predict(dt);
                 _handTrackers[h]->update(palm3D);
 
-                std::vector<TrackingResult::NormalizedPoint> lmPoints;
+                std::vector<Point3D> lmPoints;
                 for (const auto& lm : landmarks->landmarks) lmPoints.push_back(lm);
 
                 // Determine handedness: Use palm X position as heuristic
@@ -535,18 +773,54 @@ void ProcessingLoop::processFrame(Frame* frame) {
 
                 auto gesture = _gestureFSMs[h]->update(lmPoints, isRightHand);
 
+                // ═══════════════════════════════════════════════════════════
+                // Phase 4: Session FSM - Update player session state
+                // Redundancy reduction: Only emit ENTER/EXIT events
+                // (Unreal uses /hand/{id}/palm for continuous tracking + own timeout logic)
+                // ═══════════════════════════════════════════════════════════
+                bool palmInVolume = _playVolume->contains2D(landmarks->palmCenterX, landmarks->palmCenterY);
+                bool sessionStateChanged = _sessionFSMs[h]->update(palmInVolume);
+                auto sessionState = _sessionFSMs[h]->getState();
+
+                // Emit OSC events ONLY on state transitions (ENTER/EXIT)
+                if (sessionStateChanged) {
+                    TrackingResult sessionEvent;
+                    sessionEvent.handId = static_cast<int>(h);
+                    sessionEvent.timestamp = std::chrono::steady_clock::now();
+
+                    if (sessionState == SessionState::ACTIVE) {
+                        sessionEvent.osc_event = "/player/session/enter";  // IDLE → ACTIVE
+                        Logger::info("📤 OSC: /player/session/enter (Hand ", h, ")");
+                    } else if (sessionState == SessionState::IDLE) {
+                        // Only exit on IDLE (skip LOST state event)
+                        sessionEvent.osc_event = "/player/session/exit";   // LOST → IDLE (or direct)
+                        Logger::info("📤 OSC: /player/session/exit (Hand ", h, ")");
+                    }
+                    // Note: /player/session/active is redundant with /hand/{id}/palm
+                    // Unreal implements own timeout: no Palm > 100ms → Lost
+
+                    _oscQueue->try_push(sessionEvent);
+                }
+
+
                 // Build TrackingResult for OSC
                 TrackingResult result;
                 result.handId = static_cast<int>(h);  // Hand ID for OSC routing
                 result.palmPosition = _handTrackers[h]->getPosition();
                 result.velocity = _handTrackers[h]->getVelocity();
 
-                // Calculate delta (acceleration) from velocity change
+                // Calculate delta (acceleration) from velocity change (pre-inversion)
                 result.delta.dx = result.velocity.vx - _handStates[h].prevVelX;
                 result.delta.dy = result.velocity.vy - _handStates[h].prevVelY;
                 result.delta.dz = result.velocity.vz - _handStates[h].prevVelZ;
 
+                // No Y-axis inversion - send raw camera coordinates to OSC
+                // (Y=0 at top, Y=1 at bottom - standard image coordinates)
+
                 result.gesture = gesture;
+                result.gestureConfidence = _gestureFSMs[h]->getConfidence();  // 0-1 confidence
+                result.palmConfidence = palmDetection.score;  // Palm detection score
+                result.landmarkPresence = landmarks->presence;  // Landmark presence confidence
                 result.vipLocked = _handTrackers[h]->isLocked();
                 result.timestamp = std::chrono::steady_clock::now();
                 for (size_t i = 0; i < 21 && i < landmarks->landmarks.size(); ++i)
@@ -554,25 +828,26 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 _oscQueue->try_push(result);
 
                 // Update tracking state for stats display
-                _handStates[h].palmX = result.palmPosition.x;
-                _handStates[h].palmY = result.palmPosition.y;
-                _handStates[h].palmZ = result.palmPosition.z;
+                _handStates[h].palmX = _handTrackers[h]->getPosition().x;
+                _handStates[h].palmY = _handTrackers[h]->getPosition().y;
+                _handStates[h].palmZ = _handTrackers[h]->getPosition().z;
 
-                // Store delta for display (already calculated in result)
+                // Store delta for display
                 _handStates[h].deltaX = result.delta.dx;
                 _handStates[h].deltaY = result.delta.dy;
                 _handStates[h].deltaZ = result.delta.dz;
 
-                // Store current velocity for next frame's delta
-                _handStates[h].prevVelX = result.velocity.vx;
-                _handStates[h].prevVelY = result.velocity.vy;
-                _handStates[h].prevVelZ = result.velocity.vz;
+                // Store current velocity for next frame's delta (non-inverted)
+                _handStates[h].prevVelX = _handTrackers[h]->getVelocity().vx;
+                _handStates[h].prevVelY = _handTrackers[h]->getVelocity().vy;
+                _handStates[h].prevVelZ = _handTrackers[h]->getVelocity().vz;
 
-                _handStates[h].velX = result.velocity.vx;
-                _handStates[h].velY = result.velocity.vy;
-                _handStates[h].velZ = result.velocity.vz;
+                _handStates[h].velX = _handTrackers[h]->getVelocity().vx;
+                _handStates[h].velY = _handTrackers[h]->getVelocity().vy;
+                _handStates[h].velZ = _handTrackers[h]->getVelocity().vz;
                 _handStates[h].gesture = GestureFSM::getStateName(gesture);
                 _handStates[h].vipLocked = result.vipLocked;
+                _handStates[h].isRightHand = isRightHand;  // Store handedness for visualization
 
                 handCount++;
             }
@@ -588,23 +863,33 @@ void ProcessingLoop::processFrame(Frame* frame) {
 #endif
 
     // ═══════════════════════════════════════════════════════════
-    // Step 3: Send to MJPEG (AFTER drawing detections)
+    // Step 3: Send to MJPEG (AFTER drawing detections) - WITH TIMING
     // ═══════════════════════════════════════════════════════════
+    auto drawStart = std::chrono::high_resolution_clock::now();
+    long long jpegDuration = 0;
     if (shouldRenderDebug && !debugFrame.empty()) {
         // Mirror camera image horizontally BEFORE drawing overlay
-        // This makes the camera view act like a mirror (natural)
-        // But overlay text remains readable
         cv::flip(debugFrame, debugFrame, 1);  // 1 = horizontal flip
 
         drawDebugOverlay(debugFrame, frame);
+
+        auto jpegStart = std::chrono::high_resolution_clock::now();
         _mjpegServer->update(debugFrame);
+        auto jpegEnd = std::chrono::high_resolution_clock::now();
+        jpegDuration = std::chrono::duration_cast<std::chrono::microseconds>(jpegEnd - jpegStart).count();
+        totalJpegTime += jpegDuration;
     }
+    auto drawEnd = std::chrono::high_resolution_clock::now();
+    long long drawDuration = std::chrono::duration_cast<std::chrono::microseconds>(drawEnd - drawStart).count();
+    totalDrawTime += (drawDuration - jpegDuration);
 
     // ═══════════════════════════════════════════════════════════
     // Timing
     // ═══════════════════════════════════════════════════════════
     auto frameEnd = std::chrono::high_resolution_clock::now();
     auto frameDuration = std::chrono::duration_cast<std::chrono::microseconds>(frameEnd - frameStart).count();
+
+    totalFrameTime += frameDuration;
 
     static int timingCounter = 0;
     static long totalTime = 0;
@@ -650,29 +935,132 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     cv::line(debugFrame, cv::Point(vx2, vy2), cv::Point(vx2, vy2 - markerSize), volumeColor, 3);
 
     // Z-Depth indication and filter status
-    cv::putText(debugFrame, "GAME VOLUME (FULLSCREEN) - ACTIVE",
-                cv::Point(vx1 + 10, vy1 + 25),
+    // Right-align volume text to avoid hand overlay overlap
+    char volTitle[64];
+    snprintf(volTitle, sizeof(volTitle), "GAME VOLUME (%dx%d) - ACTIVE",
+             static_cast<int>(frame->width), static_cast<int>(frame->height));
+    int base = 0;
+    cv::Size titleSize = cv::getTextSize(volTitle, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &base);
+    int titleX = vx2 - titleSize.width - 10;
+    cv::putText(debugFrame, volTitle,
+                cv::Point(titleX, vy1 + 25),
                 cv::FONT_HERSHEY_SIMPLEX, 0.5, volumeColor, 1, cv::LINE_AA);
 
     char depthStr[64];
     snprintf(depthStr, sizeof(depthStr), "Z: %.1fm - %.1fm (Standing @ 2m)",
              _playVolume->minZ / 1000.0f, _playVolume->maxZ / 1000.0f);
+    cv::Size depthSize = cv::getTextSize(depthStr, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &base);
+    int depthX = vx2 - depthSize.width - 10;
     cv::putText(debugFrame, depthStr,
-                cv::Point(vx1 + 10, vy1 + 45),
+                cv::Point(depthX, vy1 + 45),
                 cv::FONT_HERSHEY_SIMPLEX, 0.4, volumeColor, 1, cv::LINE_AA);
+
+    // ═══════════════════════════════════════════════════════════
+    // 1b. Face Detection Visualization (Phase 4 - Face-Anchored Tracking)
+    // ═══════════════════════════════════════════════════════════
+    if (_palmDetector && _palmDetector->isInitialized()) {
+        const auto& faceRects = _palmDetector->getFaceRects();
+        int faceFrameWidth = _palmDetector->getFaceFrameWidth();
+        int faceFrameHeight = _palmDetector->getFaceFrameHeight();
+
+        // Draw detected faces as circles at center
+        for (const auto& faceRect : faceRects) {
+            int faceCenterX = faceRect.x + faceRect.width / 2;
+            int faceCenterY = faceRect.y + faceRect.height / 2;
+
+            // Draw face center as blue circle (person anchor)
+            cv::circle(debugFrame, cv::Point(faceCenterX, faceCenterY), 10, cv::Scalar(255, 0, 0), 2);
+            cv::putText(debugFrame, "👤", cv::Point(faceCenterX - 8, faceCenterY + 8),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1);
+
+            // Draw face bounding box
+            cv::rectangle(debugFrame, faceRect, cv::Scalar(200, 100, 255), 1, cv::LINE_AA);
+        }
+
+        // Draw lines from faces to nearest hands (if detected)
+        // NOTE: Frame is already flipped horizontally BEFORE this function is called.
+        // All coordinates here are in flipped space, so we must mirror normalized hand coords and face centers.
+        if (_lastHandCount > 0 && !faceRects.empty()) {
+            for (const auto& faceRect : faceRects) {
+                // Mirror face center because frame is flipped (x' = width - x)
+                int faceCenterX = debugFrame.cols - (faceRect.x + faceRect.width / 2);
+                int faceCenterY = faceRect.y + faceRect.height / 2;
+
+                // Find nearest hand to this face (mirror hand X as well)
+                float minDist = std::numeric_limits<float>::max();
+                int nearestHandIdx = -1;
+
+                for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
+                    int handPixelX = static_cast<int>((1.0f - _handStates[h].palmX) * debugFrame.cols);
+                    int handPixelY = static_cast<int>(_handStates[h].palmY * debugFrame.rows);
+
+                    float dist = std::sqrt(std::pow(handPixelX - faceCenterX, 2) +
+                                          std::pow(handPixelY - faceCenterY, 2));
+
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearestHandIdx = h;
+                    }
+                }
+
+                // Draw line from face to nearest hand
+                if (nearestHandIdx >= 0) {
+                    int handPixelX = static_cast<int>((1.0f - _handStates[nearestHandIdx].palmX) * debugFrame.cols);
+                    int handPixelY = static_cast<int>(_handStates[nearestHandIdx].palmY * debugFrame.rows);
+
+                    cv::line(debugFrame, cv::Point(faceCenterX, faceCenterY),
+                            cv::Point(handPixelX, handPixelY),
+                            cv::Scalar(255, 100, 200), 1, cv::LINE_AA);  // Magenta line
+
+                    // Distance label (at midpoint)
+                    int midX = (faceCenterX + handPixelX) / 2;
+                    int midY = (faceCenterY + handPixelY) / 2;
+                    char distStr[32];
+                    snprintf(distStr, sizeof(distStr), "%.0f px", minDist);
+
+                    int baseline = 0;
+                    cv::Size distTextSize = cv::getTextSize(distStr, cv::FONT_HERSHEY_SIMPLEX, 0.35, 1, &baseline);
+                    cv::Mat distTextImg = cv::Mat::zeros(distTextSize.height + baseline, distTextSize.width, CV_8UC3);
+                    cv::putText(distTextImg, distStr, cv::Point(0, distTextSize.height),
+                               cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 100, 200), 1);
+                    // No flip needed here because hand/face are already mirrored above
+
+                    int dtx1 = std::max(0, midX - distTextSize.width / 2);
+                    int dtx2 = std::min(debugFrame.cols, dtx1 + distTextSize.width);
+                    int dty1 = std::max(0, midY - 5 - distTextSize.height);
+                    int dty2 = std::min(debugFrame.rows, dty1 + distTextSize.height);
+
+                    if (dty2 > dty1 && dtx2 > dtx1) {
+                        cv::Mat distDestROI = debugFrame(cv::Rect(dtx1, dty1, dtx2 - dtx1, dty2 - dty1));
+                        cv::Mat distSrcROI = distTextImg(cv::Rect(0, 0, dtx2 - dtx1, dty2 - dty1));
+
+                        for (int row = 0; row < distSrcROI.rows; ++row) {
+                            for (int col = 0; col < distSrcROI.cols; ++col) {
+                                cv::Vec3b pixel = distSrcROI.at<cv::Vec3b>(row, col);
+                                if (pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0) {
+                                    distDestROI.at<cv::Vec3b>(row, col) = pixel;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════
     // 2. Info Panel (Status Box)
     // ═══════════════════════════════════════════════════════════
     // Always show 2 hands (even if not detected) to prevent flickering
-    // Box height: Base (118 = 6 header lines + margin) + per-hand (95 = 4 lines × 18 + margins)
-    int boxHeight = 118 + (MAX_HANDS * 95);  // Fixed height for 2 hands with delta + model info
+    // Box height: Base + per-hand; reduced size (~1/3 smaller) to avoid covering volume text
+    int boxHeight = 90 + (MAX_HANDS * 70);
+    int boxWidth = 220;
     cv::Mat overlay = debugFrame.clone();
-    cv::rectangle(overlay, cv::Rect(5, 5, 320, boxHeight), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::rectangle(overlay, cv::Rect(5, 5, boxWidth, boxHeight), cv::Scalar(0, 0, 0), cv::FILLED);
     cv::addWeighted(overlay, 0.6, debugFrame, 0.4, 0, debugFrame);
 
-    int y = 22;
-    int lineHeight = 18;
+    int y = 18;
+    int lineHeight = 14;
 
     // Date/Time
     auto now = std::chrono::system_clock::now();
@@ -680,27 +1068,27 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
     std::tm tm = *std::localtime(&time_t);
     char timeStr[64];
     std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm);
-    cv::putText(debugFrame, timeStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);
+    cv::putText(debugFrame, timeStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 255, 255), 1);
     y += lineHeight;
 
     // FPS
     cv::Scalar fpsColor = (_currentFps >= 28) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
     char fpsStr[32];
     snprintf(fpsStr, sizeof(fpsStr), "FPS: %.1f", static_cast<double>(_currentFps));
-    cv::putText(debugFrame, fpsStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.5, fpsColor, 1);
+    cv::putText(debugFrame, fpsStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.45, fpsColor, 1);
     y += lineHeight;
 
     // TensorRT Status
     std::string trtStatus = _inferenceInitialized ? "TensorRT: Ready" : "TensorRT: Building...";
     cv::Scalar trtColor = _inferenceInitialized ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255);
-    cv::putText(debugFrame, trtStatus, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, trtColor, 1);
+    cv::putText(debugFrame, trtStatus, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, trtColor, 1);
     y += lineHeight;
 
     // Model Type (LITE or FULL)
     std::string modelType = getModelType();
     cv::Scalar modelColor = (modelType == "FULL") ? cv::Scalar(255, 165, 0) : cv::Scalar(0, 255, 0);  // Orange for FULL, Green for LITE
     std::string modelText = "Models: " + modelType;
-    cv::putText(debugFrame, modelText, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, modelColor, 1);
+    cv::putText(debugFrame, modelText, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, modelColor, 1);
     y += lineHeight;
 
     // Stereo Status
@@ -731,10 +1119,20 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
             ? ((h == 0) ? cv::Scalar(0, 255, 0) : cv::Scalar(255, 165, 0))
             : cv::Scalar(80, 80, 80);  // Gray for undetected
 
-        // Hand label
-        char labelStr[32];
-        snprintf(labelStr, sizeof(labelStr), "Hand %d: %s", h, detected ? "ACTIVE" : "NOT DETECTED");
-        cv::putText(debugFrame, labelStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4, labelColor, 1);
+        // Hand label with handedness (Phase 4: Face-Anchored Tracking)
+        char labelStr[64];
+        if (detected) {
+            const char* handedness = state.isRightHand ? "RIGHT" : "LEFT";
+            // Check if position matches handedness for validation
+            bool positionValid = (state.isRightHand && state.palmX < 0.5f) ||
+                                 (!state.isRightHand && state.palmX >= 0.5f);
+            const char* validIcon = positionValid ? "✓" : "✗";
+            snprintf(labelStr, sizeof(labelStr), "Hand %d: %s %s %s", h,
+                     detected ? "ACTIVE" : "NOT DETECTED", handedness, validIcon);
+        } else {
+            snprintf(labelStr, sizeof(labelStr), "Hand %d: NOT DETECTED", h);
+        }
+        cv::putText(debugFrame, labelStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35, labelColor, 1);
         y += lineHeight;
 
         // Position (always show, 0,0,0 if not detected)
@@ -747,7 +1145,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
         } else {
             snprintf(posStr, sizeof(posStr), "  Pos: (0.00, 0.00, 0.00)");
         }
-        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+        cv::putText(debugFrame, posStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.32,
                     detected ? cv::Scalar(200, 255, 200) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
@@ -761,7 +1159,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
         } else {
             snprintf(velStr, sizeof(velStr), "  Vel: (0.00, 0.00, 0.00)");
         }
-        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+        cv::putText(debugFrame, velStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.32,
                     detected ? cv::Scalar(200, 200, 255) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
@@ -775,7 +1173,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
         } else {
             snprintf(deltaStr, sizeof(deltaStr), "  Delta: (0.00, 0.00, 0.00)");
         }
-        cv::putText(debugFrame, deltaStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+        cv::putText(debugFrame, deltaStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.32,
                     detected ? cv::Scalar(255, 200, 200) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight - 4;
 
@@ -786,7 +1184,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
         } else {
             snprintf(gestureStr, sizeof(gestureStr), "  Gesture: None");
         }
-        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+        cv::putText(debugFrame, gestureStr, cv::Point(10, y), cv::FONT_HERSHEY_SIMPLEX, 0.35,
                     detected ? cv::Scalar(0, 255, 255) : cv::Scalar(60, 60, 60), 1);
         y += lineHeight + 5;
     }

@@ -20,6 +20,8 @@
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 #include <cuda_runtime.h>
+#include <algorithm>
+#include <cctype>
 
 namespace inference {
 
@@ -27,8 +29,22 @@ namespace inference {
 class TRTLogger : public nvinfer1::ILogger {
 public:
     void log(Severity severity, const char* msg) noexcept override {
-        if (severity <= Severity::kWARNING) {
-            core::Logger::warn("[TensorRT] ", msg);
+        // Map TensorRT severities to our logger; include INFO/VERBOSE for diagnostics
+        switch (severity) {
+            case Severity::kINTERNAL_ERROR:
+            case Severity::kERROR:
+                core::Logger::error("[TensorRT] ", msg);
+                break;
+            case Severity::kWARNING:
+                core::Logger::warn("[TensorRT] ", msg);
+                break;
+            case Severity::kINFO:
+                core::Logger::info("[TensorRT] ", msg);
+                break;
+            case Severity::kVERBOSE:
+            default:
+                core::Logger::debug("[TensorRT] ", msg);
+                break;
         }
     }
 };
@@ -67,7 +83,11 @@ bool TensorRTEngine::load(const Config& config) {
         enginePath = config.modelPath;
     } else if (ext == ".onnx") {
         // Build engine path (same name, .engine extension)
-        enginePath = path.replace_extension(".engine").string();
+        // Try to save in same directory as ONNX, fallback to /tmp if permission denied
+        std::string primaryPath = path.replace_extension(".engine").string();
+        std::string fallbackPath = "/tmp/" + path.filename().replace_extension(".engine").string();
+
+        enginePath = primaryPath;  // Try primary first
 
         // Check if cached engine exists and is newer than ONNX
         bool needsBuild = true;
@@ -75,13 +95,29 @@ bool TensorRTEngine::load(const Config& config) {
             auto onnxTime = std::filesystem::last_write_time(config.modelPath);
             auto engineTime = std::filesystem::last_write_time(enginePath);
             needsBuild = (onnxTime > engineTime);
+        } else if (std::filesystem::exists(fallbackPath)) {
+            // Check fallback location
+            auto onnxTime = std::filesystem::last_write_time(config.modelPath);
+            auto engineTime = std::filesystem::last_write_time(fallbackPath);
+            if (onnxTime <= engineTime) {
+                enginePath = fallbackPath;  // Use cached version from /tmp
+                needsBuild = false;
+            }
         }
 
         if (needsBuild) {
             core::Logger::info("Building TensorRT engine from ONNX: ", config.modelPath);
-            if (!buildEngine(config.modelPath, enginePath)) {
-                core::Logger::error("Failed to build engine from ONNX");
-                return false;
+            // Try to build in primary location first
+            if (!buildEngine(config.modelPath, primaryPath)) {
+                // If that fails, try /tmp as fallback
+                core::Logger::warn("Failed to build engine in primary location, trying /tmp...");
+                if (!buildEngine(config.modelPath, fallbackPath)) {
+                    core::Logger::error("Failed to build engine from ONNX in both locations");
+                    return false;
+                }
+                enginePath = fallbackPath;  // Use /tmp version
+            } else {
+                enginePath = primaryPath;  // Successfully built in primary
             }
         } else {
             core::Logger::info("Using cached TensorRT engine: ", enginePath);
@@ -133,7 +169,7 @@ bool TensorRTEngine::loadEngine(const std::string& enginePath) {
     file.seekg(0, std::ios::beg);
 
     std::vector<char> engineData(size);
-    file.read(engineData.data(), size);
+    file.read(engineData.data(), static_cast<std::streamsize>(size));
     file.close();
 
     // Create runtime
@@ -161,6 +197,9 @@ bool TensorRTEngine::loadEngine(const std::string& enginePath) {
 }
 
 bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string& enginePath) {
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
+
     // Create builder
     auto builder = nvinfer1::createInferBuilder(gLogger);
     if (!builder) {
@@ -187,8 +226,9 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
 
     // Parse ONNX model
     core::Logger::info("Parsing ONNX file: ", onnxPath);
+    auto tp0 = Clock::now();
     if (!parser->parseFromFile(onnxPath.c_str(),
-            static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
+            static_cast<int>(nvinfer1::ILogger::Severity::kINFO))) {
         core::Logger::error("Failed to parse ONNX file");
         // Print parser errors
         for (int i = 0; i < parser->getNbErrors(); ++i) {
@@ -199,8 +239,28 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
         delete builder;
         return false;
     }
+    auto tp1 = Clock::now();
     core::Logger::info("ONNX parsed successfully. Network has ", network->getNbInputs(),
                       " inputs, ", network->getNbOutputs(), " outputs");
+
+    // Log input tensor dims (and detect dynamic dims)
+    for (int i = 0; i < network->getNbInputs(); ++i) {
+        auto* in = network->getInput(i);
+        auto dims = in->getDimensions();
+        std::string dimStr;
+        bool hasDynamic = false;
+        for (int d = 0; d < dims.nbDims; ++d) {
+            int val = static_cast<int>(dims.d[d]);
+            hasDynamic |= (val == -1);
+            dimStr += std::to_string(val);
+            if (d < dims.nbDims - 1) dimStr += "x";
+        }
+        core::Logger::info("  Input ", i, ": ", in->getName(), " dims=[", dimStr, "]",
+                           hasDynamic ? " (dynamic)" : "");
+        if (hasDynamic) {
+            core::Logger::warn("  Dynamic dimensions detected. Consider adding an optimization profile.");
+        }
+    }
 
     // Create builder config
     auto config = builder->createBuilderConfig();
@@ -218,11 +278,114 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
         core::Logger::info("FP16 enabled for TensorRT");
     }
 
+    // Lower optimization level to reduce build time for small real-time models
+    // Range is typically 0..5; 1 is a good tradeoff for fast builds
+    config->setBuilderOptimizationLevel(1);
+
+    // Increase logging detail for build
+    config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
+
+    // If any input has dynamic dims, add a static optimization profile based on model type
+    bool anyDynamic = false;
+    for (int i = 0; i < network->getNbInputs(); ++i) {
+        auto* in = network->getInput(i);
+        auto dims = in->getDimensions();
+        for (int d = 0; d < dims.nbDims; ++d) {
+            if (dims.d[d] == -1) { anyDynamic = true; break; }
+        }
+        if (anyDynamic) break;
+    }
+
+    if (anyDynamic) {
+        // Determine expected WxH from filename heuristics
+        int targetH = 224, targetW = 224;
+        std::string lowerPath = onnxPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        if (lowerPath.find("palm") != std::string::npos) {
+            targetH = targetW = 192;
+        } else if (lowerPath.find("landmark") != std::string::npos) {
+            targetH = targetW = 224;
+        }
+        auto* profile = builder->createOptimizationProfile();
+        bool profileOk = true;
+        for (int i = 0; i < network->getNbInputs(); ++i) {
+            auto* in = network->getInput(i);
+            auto inDims = in->getDimensions();
+            nvinfer1::Dims staticDims = inDims;
+
+            // Determine layout (NHWC vs NCHW) by locating the channel dimension == 3
+            int cIndex = -1;
+            if (inDims.nbDims == 4) {
+                for (int d = 0; d < inDims.nbDims; ++d) {
+                    if (inDims.d[d] == 3) { cIndex = d; break; }
+                }
+            }
+            bool isNHWC = (cIndex == 3);
+            bool isNCHW = (cIndex == 1);
+            core::Logger::info("  Input layout inference for ", in->getName(), ": ",
+                               isNHWC ? "NHWC" : (isNCHW ? "NCHW" : "unknown"));
+
+            if (staticDims.nbDims == 4) {
+                // Set batch
+                if (staticDims.d[0] == -1) staticDims.d[0] = 1;
+
+                if (isNHWC) {
+                    // N, H, W, C
+                    if (staticDims.d[1] == -1) staticDims.d[1] = targetH;
+                    if (staticDims.d[2] == -1) staticDims.d[2] = targetW;
+                    if (staticDims.d[3] == -1) staticDims.d[3] = 3;
+                } else if (isNCHW) {
+                    // N, C, H, W
+                    if (staticDims.d[1] == -1) staticDims.d[1] = 3;
+                    if (staticDims.d[2] == -1) staticDims.d[2] = targetH;
+                    if (staticDims.d[3] == -1) staticDims.d[3] = targetW;
+                } else {
+                    // Fallback: assume NHWC (typisch für TFLite/MediaPipe Konvertierungen)
+                    if (staticDims.d[1] == -1) staticDims.d[1] = targetH;
+                    if (staticDims.d[2] == -1) staticDims.d[2] = targetW;
+                    if (staticDims.d[3] == -1) staticDims.d[3] = 3;
+                }
+            }
+
+            // Apply same dims for MIN/OPT/MAX (static profile)
+            profileOk &= profile->setDimensions(in->getName(), nvinfer1::OptProfileSelector::kMIN, staticDims);
+            profileOk &= profile->setDimensions(in->getName(), nvinfer1::OptProfileSelector::kOPT, staticDims);
+            profileOk &= profile->setDimensions(in->getName(), nvinfer1::OptProfileSelector::kMAX, staticDims);
+
+            core::Logger::info("Optimization profile dims for ", in->getName(), ": [",
+                               staticDims.d[0], "x", staticDims.d[1], "x",
+                               staticDims.d[2], "x", staticDims.d[3], "]");
+        }
+        if (!profileOk) {
+            core::Logger::error("Failed to set optimization profile dimensions");
+            // Note: profile not added; relying on process cleanup to free in failure path
+            delete config;
+            delete parser;
+            delete network;
+            delete builder;
+            return false;
+        }
+        int profIdx = config->addOptimizationProfile(profile);
+        if (profIdx < 0) {
+            core::Logger::error("Failed to add optimization profile to config");
+            delete config;
+            delete parser;
+            delete network;
+            delete builder;
+            return false;
+        }
+        core::Logger::info("Added optimization profile index ", profIdx);
+    }
+
     // Set memory pool limit (256 MB)
     config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 256 * 1024 * 1024);
 
     // Build serialized network
+    core::Logger::info("Building serialized network (workspace=256MB, optLevel=1)...");
+    auto tb0 = Clock::now();
     auto serializedEngine = builder->buildSerializedNetwork(*network, *config);
+    auto tb1 = Clock::now();
+
     if (!serializedEngine) {
         core::Logger::error("Failed to build serialized network");
         delete config;
@@ -234,7 +397,16 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
 
     // Save to file
     std::ofstream engineFile(enginePath, std::ios::binary);
-    engineFile.write(static_cast<const char*>(serializedEngine->data()), serializedEngine->size());
+    if (!engineFile.good()) {
+        core::Logger::error("Failed to open engine file for writing: ", enginePath);
+        delete serializedEngine;
+        delete config;
+        delete parser;
+        delete network;
+        delete builder;
+        return false;
+    }
+    engineFile.write(static_cast<const char*>(serializedEngine->data()), static_cast<std::streamsize>(serializedEngine->size()));
     engineFile.close();
 
     core::Logger::info("Engine saved to: ", enginePath);
@@ -245,6 +417,12 @@ bool TensorRTEngine::buildEngine(const std::string& onnxPath, const std::string&
     delete parser;
     delete network;
     delete builder;
+
+    auto t1 = Clock::now();
+    auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(tp1 - tp0).count();
+    auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(tb1 - tb0).count();
+    auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    core::Logger::info("Build timings: parse=", parseMs, " ms, build=", buildMs, " ms, total=", totalMs, " ms");
 
     return true;
 }
@@ -277,11 +455,11 @@ void TensorRTEngine::extractTensorInfo() {
         info.isInput = isInput;
         info.size = 1;
 
-        std::string dimStr = "";
+        std::string dimStr;
         for (int d = 0; d < dims.nbDims; ++d) {
-            info.dims.push_back(dims.d[d]);
+            info.dims.push_back(static_cast<int>(dims.d[d]));
             if (dims.d[d] > 0) {
-                info.size *= dims.d[d];
+                info.size *= static_cast<size_t>(dims.d[d]);
             }
             dimStr += std::to_string(dims.d[d]);
             if (d < dims.nbDims - 1) dimStr += "x";
@@ -391,7 +569,7 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
     cudaStreamSynchronize(nullptr);
 
     // Copy FIRST output to host (for backwards compatibility)
-    if (!outputInfos_.empty() && d_outputs_.size() > 0) {
+    if (!outputInfos_.empty() && !d_outputs_.empty()) {
         size_t outputBytes = outputInfos_[0].size * sizeof(float);
         err = cudaMemcpy(outputData, d_outputs_[0], outputBytes, cudaMemcpyDeviceToHost);
         if (err != cudaSuccess) {

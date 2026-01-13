@@ -148,7 +148,7 @@ void PipelineManager::createPipeline(const Config& config) {
 
     Logger::info("RGB Camera: 1080p @ ", config.fps, " FPS (Exposure Limit: 20ms)");
 
-    // RGB Preview: 640×360 NV12 (Zero-Copy friendly, LETTERBOX for NN)
+    // RGB Preview: 800×450 with LETTERBOX (working config)
     auto rgbPreview = camRgb->requestOutput(
         std::make_pair(config.previewWidth, config.previewHeight),
         dai::ImgFrame::Type::NV12,
@@ -156,7 +156,8 @@ void PipelineManager::createPipeline(const Config& config) {
         config.fps
     );
 
-    Logger::info("RGB Preview: ", config.previewWidth, "x", config.previewHeight, " NV12 LETTERBOX");
+    Logger::info("RGB Preview: ", config.previewWidth, "x", config.previewHeight,
+                 " NV12 LETTERBOX (working 28 FPS config)");
 
     if (config.enableStereo) {
         // ─────────────────────────────────────────────────────────────

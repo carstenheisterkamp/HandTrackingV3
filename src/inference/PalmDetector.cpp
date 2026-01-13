@@ -291,16 +291,11 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
     nppiNV12ToRGB_8u_P2C3R(pSrc, width,
                            static_cast<Npp8u*>(d_rgb_), width * 3, srcSize);
 
-    // Resize with letterboxing
-    // For simplicity, we do letterbox on CPU for now
-    // TODO: Implement GPU letterbox resize
-
-    // Copy RGB to host for now (will optimize later)
+    // Copy RGB to host for CPU letterbox
     std::vector<uint8_t> rgbHost(width * height * 3);
     cudaMemcpy(rgbHost.data(), d_rgb_, rgbHost.size(), cudaMemcpyDeviceToHost);
 
     // CPU letterbox resize and normalize
-    // Calculate scale and offsets
     float scale = std::min(
         static_cast<float>(config_.inputWidth) / width,
         static_cast<float>(config_.inputHeight) / height
@@ -315,7 +310,6 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
     std::fill(inputBuffer_.begin(), inputBuffer_.end(), 0.5f);
 
     // Simple bilinear resize + normalize to [0, 1]
-    // Model expects NHWC format: [1, 192, 192, 3]
     for (int y = 0; y < newH; ++y) {
         for (int x = 0; x < newW; ++x) {
             float srcX = static_cast<float>(x) / scale;
@@ -332,7 +326,6 @@ void PalmDetector::preprocessNV12(const uint8_t* nv12Data, int width, int height
                 if (dstX >= 0 && dstX < config_.inputWidth &&
                     dstY >= 0 && dstY < config_.inputHeight) {
 
-                    // NHWC format: [batch, height, width, channels]
                     int dstIdx = (dstY * config_.inputWidth + dstX) * 3;
 
                     inputBuffer_[dstIdx + 0] = static_cast<float>(rgbHost[srcIdx + 0]) / 255.0f;
@@ -635,11 +628,12 @@ bool PalmDetector::isInFaceRegion(float x, float y, float w, float h) const {
 
     // Check if detection overlaps with any face region
     for (const auto& faceRect : lastFaceRects_) {
-        // Expand face region by 20% for safety margin
-        float faceX1 = faceRect.x - faceRect.width * 0.1f;
-        float faceY1 = faceRect.y - faceRect.height * 0.1f;
-        float faceX2 = faceRect.x + faceRect.width * 1.1f;
-        float faceY2 = faceRect.y + faceRect.height * 1.1f;
+        // Reduce safety margin from 10% to 5% to avoid losing hands near face
+        // (hands moving past face should still be tracked)
+        float faceX1 = faceRect.x - faceRect.width * 0.05f;
+        float faceY1 = faceRect.y - faceRect.height * 0.05f;
+        float faceX2 = faceRect.x + faceRect.width * 1.05f;
+        float faceY2 = faceRect.y + faceRect.height * 1.05f;
 
         // Detection bounding box
         float detX1 = pixelX - pixelW / 2;

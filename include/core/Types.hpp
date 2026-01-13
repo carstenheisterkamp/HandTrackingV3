@@ -3,6 +3,8 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <vector>
+#include <string>
 #include "Frame.hpp"
 #include "FramePool.hpp"
 #include "SpscQueue.hpp"
@@ -48,6 +50,14 @@ constexpr int GESTURE_DEBOUNCE_FRAMES = 1;      // Instant recognition (no debou
 // V3: OSC Configuration
 constexpr int OSC_RATE_HZ = 30;
 constexpr int OSC_MAX_LATENCY_MS = 50;
+
+// V3: Z-Axis (Depth) Normalization for OSC
+// All coordinates sent to OSC are normalized [0.0, 1.0]
+// X, Y are image coordinates, Z is physical depth
+// This allows flexible scaling in Game Engine (see docs/COORDINATE_SYSTEM.md)
+constexpr float Z_MIN_MM = 1200.0f;     // 1.2m - minimum tracking depth (close to player)
+constexpr float Z_MAX_MM = 2800.0f;     // 2.8m - maximum tracking depth (far from player)
+constexpr float Z_RANGE_MM = Z_MAX_MM - Z_MIN_MM;  // 1600mm total range
 
 // V3: Stereo Configuration
 constexpr int STEREO_WINDOW_SIZE = 9;      // 9×9 pixel window for point depth
@@ -107,7 +117,10 @@ struct Delta3D {
 };
 
 struct TrackingResult {
-    // ...existing code...
+    // Hand identification
+    int handId = 0;  // Hand ID (0 or 1)
+    bool vipLocked = false;  // VIP lock status
+    std::chrono::steady_clock::time_point timestamp;
 
     // V3: Palm center (Kalman filtered, predicted)
     Point3D palmPosition;
@@ -120,7 +133,15 @@ struct TrackingResult {
 
     // V3: Gesture state (FSM output)
     GestureState gesture = GestureState::Idle;
-    float gestureConfidence = 0.0f;
+    float gestureConfidence = 0.0f;  // Gesture FSM confidence (0-1)
+    float palmConfidence = 0.0f;     // Palm detection score (0-1)
+    float landmarkPresence = 0.0f;   // Landmark presence confidence (0-1)
+
+    // Hand landmarks (21 points)
+    std::vector<Point3D> landmarks;
+
+    // Phase 4: OSC Event (e.g., "/player/session/enter")
+    std::string osc_event;  // Empty if no event, otherwise OSC path
 
     // Legacy fields (for compatibility)
     float pinchDistance = 0.0f;

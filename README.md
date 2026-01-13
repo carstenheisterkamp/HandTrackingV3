@@ -1,3 +1,30 @@
+# HandTrackingV3 (DepthAI v3 + Jetson Orin)
+
+Kurzüberblick:
+- Remote Entwicklung: Jetson über Tailscale unter `100.101.16.21`
+- MJPEG Preview: `http://100.101.16.21:8080` (Spiegelung aktiv – nur Kamerabild/Boxes/Skelette gespiegelt, Overlay-Text lesbar)
+- Modelle: LITE und FULL unterstützt; Overlay zeigt aktives Modell an
+- Build: CLion Remote Host mit Ninja; immer erst TESTEN, dann committen!
+
+OSC-Ausgabe (30 Hz, Drop-Oldest > 50ms):
+- `/hand/{id}/palm` → `[x, y, z]` (alle normalisiert 0-1)
+  - X: 0=links, 1=rechts
+  - Y: 0=oben, 1=unten (Y invertiert für UE)
+  - Z: normalisiert aus physischer Tiefe (1.2m–2.8m → 0–1)
+- `/hand/{id}/velocity` → `[vx, vy, vz]` (in normalisiertem Raum)
+- `/hand/{id}/delta` → `[dx, dy, dz]` (Beschleunigung)
+- `/hand/{id}/gesture` → `[id, confidence, name]`
+
+Legacy entfernt:
+- `/hand/{id}/vip` (VIP Lock) und andere Gen2-Pfade sind nicht mehr aktiv.
+
+Wichtigste Regeln (Auszug):
+- Keine Architekturänderungen ohne Freigabe
+- Immer zuerst testen, dann commit/push
+- Niemals ungefragt revertieren – erst Ursache analysieren und fixen
+
+Siehe auch `docs/OPTIMAL_WORKFLOW_V3.md` für Details zum Pipeline-Workflow und `docs/COORDINATE_SYSTEM.md` für Koordinaten-Normalisierung.
+
 # Setup Hand-Tracking Service (Jetson Orin Nano)
 
 Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfiguration für ein C++ Projekt mit **DepthAI v3**, **OpenCV**, **OSC** und **Tailscale** unter Ubuntu 22.04.
@@ -229,4 +256,3 @@ Die V3 Pipeline nutzt:
 - **6 SHAVEs** für Palm Detection
 - **6 SHAVEs** für Hand Landmarks
 - Das ermöglicht **35-40 FPS**.
-```

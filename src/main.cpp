@@ -33,7 +33,7 @@ int main() {
     }
 
     // Configuration Constants
-    const std::string OSC_HOST = "100.86.141.97";  // MacBook via Tailscale for testing
+    const std::string OSC_HOST = "169.254.1.100";  // OSC Target (Unreal Engine)
     const std::string OSC_PORT = "9000";
 
     // ═══════════════════════════════════════════════════════════
@@ -41,9 +41,11 @@ int main() {
     // ═══════════════════════════════════════════════════════════
     // Set to true to use full models (better accuracy, slower)
     // Set to false to use lite models (faster, less accurate)
-    const bool USE_FULL_MODELS = true;  // ← FULL models aktiv
+    const bool USE_FULL_MODELS = true;  // ← FULL models für optimale Gestenerkennung @ 2m
 
-    // Model paths (automatically selected based on flag)
+    // Model paths: TensorRT auto-compiles .onnx → .engine (cached)
+    // First run: ~2min compilation, creates .engine files
+    // Subsequent runs: Fast (loads cached .engine)
     const std::string PALM_MODEL = USE_FULL_MODELS
         ? "models/palm_detection_full.onnx"
         : "models/palm_detection.onnx";
@@ -57,6 +59,7 @@ int main() {
     core::Logger::info("  Mode: ", USE_FULL_MODELS ? "FULL (High Accuracy)" : "LITE (Fast)");
     core::Logger::info("  Palm Model: ", PALM_MODEL);
     core::Logger::info("  Landmark Model: ", LANDMARK_MODEL);
+    core::Logger::info("  Note: TensorRT will cache .engine files for fast loading");
     core::Logger::info("═══════════════════════════════════════════════");
 
         // Outer Loop for auto-restart
@@ -74,14 +77,14 @@ int main() {
             core::PipelineManager::Config config;
             config.fps = 30.0f;  // V3: 30 FPS for stable operation
             config.ispScaleNum = 1;
-            config.ispScaleDenom = 3; // 1080p → 360p
-            config.previewWidth = 640;   // RGB Preview width
-            config.previewHeight = 360;  // RGB Preview height
+            config.ispScaleDenom = 3;
             config.monoWidth = 640;      // Mono L/R width (THE_400_P)
             config.monoHeight = 400;     // Mono L/R height (THE_400_P)
-            config.enableStereo = true;  // V3 Phase 3: Stereo Depth enabled for Z-coordinate
+            config.enableStereo = true;  // V3 Phase 3: Stereo Depth enabled
             config.nnPath = "";  // V3: NNs disabled on OAK-D, run on Jetson
-            config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP Address
+            config.deviceIp = "169.254.1.222"; // OAK-D Pro PoE IP
+            // previewWidth/Height = 800×450 (default in PipelineManager.hpp)
+
 
             // 3. Init & Start Pipeline
             pipelineManager->init(config);

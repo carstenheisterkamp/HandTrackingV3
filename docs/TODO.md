@@ -1,36 +1,90 @@
 # TODO: V3 3D Hand Controller Implementation
 
-> **Aktuelle Phase:** Phase 3 - Stereo Depth Testing 🧪
-> **Letztes Update:** 2026-01-10
-> **Status:** 2D Tracking ✅ | 3D Code ✅ | Testing ⬜
+> **Aktuelle Phase:** Phase 4 - Lite vs. Full Modelle Testing 🧪
+> **Letztes Update:** 2026-01-12
+> **Status:** 2D Tracking ✅ | 3D Code ✅ | Session FSM ✅ | Lite ONNX ✅
 
 ---
 
-## 🎯 Aktuelle Aufgabe: Phase 3 Testing
+## 📋 TFLite → ONNX Konvertierung (Reference)
 
-**Implementiert (2026-01-10):**
-- ✅ Stereo Depth am Palm Center
-- ✅ Z-Koordinate in OSC Output
-- ✅ Debug Overlay mit Volume (16:9), Delta, Z-Werten
-- ✅ Gesten-Thresholds optimiert (FIVE/FIST verbessert)
-- ✅ FULL Models aktiviert (bessere Accuracy @ 30 FPS)
-- ✅ Preview gespiegelt (Mirror-View, Text lesbar)
-- ✅ OSC Dokumentation konsolidiert (nur Unreal Engine C++)
+**Funktionierende Kombination (Jetson aarch64, Python 3.10) - 2026-01-12:**
+
+```bash
+# Isolierte temporäre venv in /tmp (keine System-Änderungen)
+cd /tmp
+python3 -m venv convert_env
+source /tmp/convert_env/bin/activate
+pip install --upgrade pip
+
+# Bewährte, kompatible Versionen (WICHTIG: Diese Kombination ist getestet!)
+pip install numpy==1.23.5
+pip install protobuf==3.20.3
+pip install tensorflow==2.12.0
+pip install tf2onnx==1.13.0
+pip install onnx==1.14.0
+
+# Konvertierung (Lite TFLite → ONNX)
+python3 -m tf2onnx.convert \
+  --tflite /home/nvidia/dev/HandTrackingV3/models/palm_detection_lite.tflite \
+  --output /home/nvidia/dev/HandTrackingV3/models/palm_detection.onnx \
+  --opset 13
+
+python3 -m tf2onnx.convert \
+  --tflite /home/nvidia/dev/HandTrackingV3/models/hand_landmark_lite.tflite \
+  --output /home/nvidia/dev/HandTrackingV3/models/hand_landmark.onnx \
+  --opset 13
+
+# Aufräumen
+deactivate
+rm -rf /tmp/convert_env
+
+# Verifizieren
+ls -lh /home/nvidia/dev/HandTrackingV3/models/*.onnx
+```
+
+**Wichtige Hinweise:**
+- TensorFlow 2.12.0 ist kompatibel mit protobuf 3.20.3
+- tf2onnx 1.13.0 + onnx 1.14.0 arbeiten mit protobuf 3.20.3
+- Diese Versionen sind aufeinander abgestimmt (keine Dependency-Konflikte)
+- Beim nächsten Service-Start baut TensorRT automatisch `.engine` aus den ONNX-Files
+- Konvertierung in isolierter /tmp-venv verhindert System-Konflikte
+
+**Verfügbare Modelle:**
+- `palm_detection.onnx` (Lite) + `hand_landmark.onnx` (Lite)
+- `palm_detection_full.onnx` (Full) + `hand_landmark_full.onnx` (Full)
+
+---
+
+## 🎯 Aktuelle Aufgabe: 1536×864 Balanced Quality Test
+
+**Test-Ergebnisse 1920×1080 (2026-01-11):**
+- ❌ FPS: 12.5 (zu niedrig, nicht nutzbar)
+- ✅ Erkennung: Besser bei Faust & starken Winkeln
+- 📊 Resultat: Hand-Größe gut, aber TensorRT Bottleneck
+
+**Aktuell (1536×864):**
+- ✅ Resolution: 1536×864 (Balanced: +140% vs. 640×360)
+- ✅ FPS Ziel: 25-30 FPS
+- ✅ Hand-Größe @ 2m: ~240px (deutlich besser als 640×360)
+- ✅ Face Margin: 5% (optimiert)
+- ✅ Y-Achse: Raw camera coords (nicht invertiert)
+- ✅ OSC Ziel: 169.254.1.100:9000
 
 **TODO:**
-- ⬜ **TEST auf Jetson:** Tiefenwerte bei 50cm, 100cm, 150cm verifizieren
-- ⬜ **TEST:** Gesten-Erkennung (FIVE vs FOUR, FIST bei 2 Händen)
-- ⬜ Bei Bedarf: Device-Kalibrierung laden (statt Default)
-- ⬜ Bei Bedarf: Rectification Maps für bessere Stereo-Accuracy
+- ⬜ **TEST auf Jetson:** FPS bei 1536×864 messen
+- ⬜ Falls FPS <25: Fallback auf 1280×720
+- ⬜ Hand-Tracking-Stabilität bei 2m Distance testen
+- ⬜ Face-Anchored Tracking validieren
 
-**Nächster Schritt:** Testen wenn Kamera verfügbar 🎥
+**Nächster Schritt:** Build & Test 1536×864 🎥
 
 ---
 
 ## 📅 Development Roadmap
 
 ### ✅ Phase 1: Sensor-Only Pipeline (Abgeschlossen)
-- RGB 640×360 NV12 @ 30 FPS
+- RGB NV12 @ 30 FPS (adaptive resolution)
 - Mono L/R 640×400 GRAY8 @ 30 FPS
 - Sync Node für synchronisierte Streams
 - **Ergebnis:** Stabile 30 FPS auf Jetson
@@ -40,10 +94,10 @@
 - Hand Landmark TensorRT Engine
 - 2-Hand Tracking mit Kalman Filter
 - MCP+Angle Gestenerkennung (13 Gesten)
-- Haar Cascade Face Filter (0 False Positives)
-- **Ergebnis:** 25-30 FPS mit beiden Händen
+- Haar Cascade Face Filter (optimiert: 5% margin)
+- **Ergebnis:** 25-30 FPS mit beiden Händen @ 1280×720
 
-### 🧪 Phase 3: Stereo Depth (Testing)
+### 🧪 Phase 3: Stereo Depth (Code Ready, Testing Blocked)
 **Implementiert (2026-01-10):**
 
 | Komponente | Status | Details |
@@ -74,16 +128,16 @@
 | 3D Play Volume (16:9) | ✅ Implementiert | Preview + Filtering aktiv |
 | Volume Filtering Logic | ✅ Implementiert | 2D Filter vor Landmark Inference |
 | Face-Anchored Tracking | ⬜ | Haar Cascade Hand-zu-Gesicht |
-| Session FSM (IDLE/ACTIVE/LOST) | ⬜ | State Machine für Player Session |
-| OSC Events (/player/*) | ⬜ | enter/active/lost/exit Events |
+| Session FSM (IDLE/ACTIVE/LOST) | ✅ Implementiert | Per-Hand State Machine + Transitions |
+| OSC Events (/player/*) | ✅ Implementiert | enter/active/lost/exit Events |
 | Multi-Person Ignoring | ⬜ | Ignoriere Personen außerhalb Volume |
 
-**Implementiert (2026-01-10):**
-- ✅ PlayVolume Klasse mit 16:9 Aspect Ratio
-- ✅ 2D Volume-Filtering vor Landmark Inference (Performance-Optimierung)
-- ✅ Debug-Visualisierung: Rejected palms (rote Kreise + "OUT" Label)
-- ✅ Volume Status im Preview: "PLAY VOLUME (16:9) - ACTIVE"
-- ✅ Filtering-Stats im Log
+**Implementiert (2026-01-11):**
+- ✅ SessionFSM Klasse mit 3 States (IDLE/ACTIVE/LOST)
+- ✅ Stabile Frames: 15 für IDLE→ACTIVE, 3 für LOST→IDLE
+- ✅ OSC Events: /player/session/{enter,active,lost,exit}
+- ✅ Per-Hand Tracking (Hand 0 + Hand 1)
+- ✅ State Transition Logging
 
 **Priorität:** Aktiv in Entwicklung
 
@@ -211,3 +265,43 @@ DEBOUNCE = 3 frames (~100ms)
 - [x] CMakeLists.txt angepasst
 - [x] Code Cleanup (ProcessingLoop 815→250 Zeilen)
 
+# TODO (Stand: 2026-01-10)
+
+## Status & Phasen
+- [x] Phase 2: 2D Hand-Tracking (Palm + Landmarks, 2 Hände, Preview)
+- [ ] Phase 3: Stereo Depth (Palm-Z, Volume-3D Filter) – Tests offen
+- [x] Phase 4: Player Lock System – Session FSM ✅ | Face-Anchoring ⬜ | Multi-Person ⬜
+
+## Aktuell in Arbeit
+- [x] OSC: Alle Koordinaten normalisiert (X/Y/Z → 0-1)
+- [x] OSC: Y-Achse invertiert (0=oben, 1=unten) für Unreal Engine
+- [x] Preview: Gespiegelt (nur Kamerabild/Boxes/Skelette), Overlay lesbar
+- [x] Face-Filter: Haar Cascade aktiv – False Positives im Gesicht unterdrückt
+- [x] Gesten: MCP-basierte Erkennung mit Angle-Fallback
+- [x] Zwei Hände stabil erkannt und getrackt
+- [ ] Stereo Z-Validierung: Testen bei bekannten Distanzen (0.5m, 1m, 1.5m, 2m, 2.5m)
+- [ ] Volume-Filtering (3D): Outside-Volume verwerfen, 2 Hände priorisieren (First-Come-First-Serve)
+- [ ] OSC: Deltas werden gesendet (Verifizierung im Client-Log)
+- [ ] Models: FULL aktiv? Overlay zeigt korrekten Typ (prüfen)
+
+## Nächste Schritte
+1. StereoDepth Tests (Palm-Z): Messreihe mit Markierungen am Boden
+2. Play Volume: 16:9 Volumen finalisieren und im Overlay anzeigen (bereits aktiv)
+3. Player Lock: Implementieren gemäß `PLAYER_LOCK_DESIGN.md`
+4. Gesten-Tuning:
+   - FIVE vs FOUR (Daumen-Schwellen)
+   - FIST vs THUMB_UP (Winkel-Fallback)
+   - MIDDLE_FINGER - Robustheit erhöhen
+5. Optional: One-Euro Filter (Client-seitig empfohlen; Server-seitig als Option aufnehmen)
+
+## Qualität & Regeln
+- Immer erst TESTEN, dann commit/push
+- Keine Architekturänderungen ohne explizite Freigabe
+- Niemals ungefragt revertieren – erst Ursache finden und fixen
+- Clang-Tidy aktiv (performance/readability), `-Wall -Wextra -Werror` auf Jetson
+
+## Backlog
+- Service-Resilienz: Gegen LAN/Kamera-Verlust robust machen
+- OSC: Session-Events (Spawn/Despawn) bei Betreten/Verlassen des Volumens
+- MJPEG: Farbartefakte beobachten (aktuell unkritisch)
+- Gesten: Zweihändige dynamische Gesten (geplant)

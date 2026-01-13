@@ -146,6 +146,7 @@ add_executable(HandTrackingService src/main.cpp
         src/core/SystemMonitor.cpp
         src/core/HandTracker.cpp
         src/core/GestureFSM.cpp
+        src/core/SessionFSM.cpp
         src/core/StereoDepth.cpp
         src/inference/TensorRTEngine.cpp
         src/inference/PalmDetector.cpp
@@ -166,6 +167,7 @@ add_executable(HandTrackingService src/main.cpp
         include/core/SystemMonitor.hpp
         include/core/HandTracker.hpp
         include/core/GestureFSM.hpp
+        include/core/SessionFSM.hpp
         include/core/StereoDepth.hpp
         include/inference/TensorRTEngine.hpp
         include/inference/PalmDetector.hpp
@@ -192,7 +194,14 @@ target_link_libraries(HandTrackingService PRIVATE
 
 if(CUDAToolkit_FOUND)
     target_compile_definitions(HandTrackingService PRIVATE ENABLE_CUDA)
-    target_link_libraries(HandTrackingService PRIVATE CUDA::cudart CUDA::nppicc)
+    # NPP Libraries required:
+    # - nppicc: Color Conversion (NV12→RGB)
+    # - nppig: Imaging Geometry (Resize, Warp, Affine)
+    target_link_libraries(HandTrackingService PRIVATE
+        CUDA::cudart
+        CUDA::nppicc
+        CUDA::nppig
+    )
 endif()
 
 if(TENSORRT_FOUND)
@@ -201,17 +210,27 @@ if(TENSORRT_FOUND)
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-    target_compile_options(HandTrackingService PRIVATE -O3 -march=native -mtune=native -Wno-psabi)
+    # Use -O2 instead of -O3 to avoid OOM during compilation on Jetson (8GB RAM)
+    target_compile_options(HandTrackingService PRIVATE -O2 -march=native -mtune=native -Wno-psabi)
 else()
-    target_compile_options(HandTrackingService PRIVATE -O3)
+    target_compile_options(HandTrackingService PRIVATE -O2)
 endif()
 
-# Copy models directory to the build directory so the executable can find them
+# Copy .onnx and .engine files to build directory
+# Strategy: TensorRT generates .engine files in models/ (source), we copy them both
 add_custom_command(TARGET HandTrackingService POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/models
-    $<TARGET_FILE_DIR:HandTrackingService>/models
-    COMMENT "Copying models directory to build output..."
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:HandTrackingService>/models
+    # Copy all .onnx files (source models)
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/palm_detection_full.onnx
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/hand_landmark_full.onnx
+        $<TARGET_FILE_DIR:HandTrackingService>/models/
+    # Copy any pre-generated .engine files (if they exist)
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/palm_detection_full.engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/models/hand_landmark_full.engine
+        $<TARGET_FILE_DIR:HandTrackingService>/models/ 2>/dev/null || true
+    COMMENT "Copying .onnx and .engine models to build directory..."
 )
 
 # Note: Pre-build kill/cleanup removed - causes sudo password hang during build

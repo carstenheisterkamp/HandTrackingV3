@@ -67,7 +67,7 @@ public:
      * @param isRightHand true if right hand, false if left (for thumb detection)
      * @return Current gesture state (may be unchanged due to debounce)
      */
-    GestureState update(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    GestureState update(const std::vector<Point3D>& landmarks,
                         bool isRightHand = true);
 
     /**
@@ -110,41 +110,41 @@ private:
     TransitionCallback transitionCallback_;
 
     // Detection helpers
-    [[nodiscard]] GestureState detectGesture(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] GestureState detectGesture(const std::vector<Point3D>& landmarks,
                                               bool isRightHand) const;
-    [[nodiscard]] GestureState detectOpenHand(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] GestureState detectOpenHand(const std::vector<Point3D>& landmarks,
                                                bool isRightHand) const;
 
     // Finger curl: 0.0 = fully extended, 1.0 = fully curled
-    [[nodiscard]] float getFingerCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] float getFingerCurl(const std::vector<Point3D>& landmarks,
                                        int mcp, int pip, int dip, int tip) const;
 
-    [[nodiscard]] float getThumbCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] float getThumbCurl(const std::vector<Point3D>& landmarks,
                                       bool isRightHand) const;
 
     // Simple Y-based finger detection (robust to viewing angle)
-    [[nodiscard]] bool isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] bool isFingerUp(const std::vector<Point3D>& landmarks,
                                    int tipIdx, int pipIdx) const;
 
-    [[nodiscard]] bool isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] bool isThumbUp(const std::vector<Point3D>& landmarks,
                                   bool isRightHand) const;
 
-    [[nodiscard]] bool isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] bool isFingerExtended(const std::vector<Point3D>& landmarks,
                                         int mcp, int pip, int dip, int tip) const;
 
-    [[nodiscard]] bool isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+    [[nodiscard]] bool isThumbExtended(const std::vector<Point3D>& landmarks,
                                         bool isRightHand) const;
 
-    [[nodiscard]] bool isVulcanSpread(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
+    [[nodiscard]] bool isVulcanSpread(const std::vector<Point3D>& landmarks) const;
 
-    [[nodiscard]] float distance(const TrackingResult::NormalizedPoint& a,
-                                 const TrackingResult::NormalizedPoint& b) const;
+    [[nodiscard]] float distance(const Point3D& a,
+                                 const Point3D& b) const;
 
-    [[nodiscard]] float distance2D(const TrackingResult::NormalizedPoint& a,
-                                   const TrackingResult::NormalizedPoint& b) const;
+    [[nodiscard]] float distance2D(const Point3D& a,
+                                   const Point3D& b) const;
 
-    [[nodiscard]] float getHandSize(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
-    [[nodiscard]] float getPinchDistance(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const;
+    [[nodiscard]] float getHandSize(const std::vector<Point3D>& landmarks) const;
+    [[nodiscard]] float getPinchDistance(const std::vector<Point3D>& landmarks) const;
 
     void transitionTo(GestureState newState);
 };

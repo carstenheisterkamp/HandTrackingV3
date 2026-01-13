@@ -45,7 +45,7 @@ float GestureFSM::getConfidence() const {
     return static_cast<float>(frameCount_) / static_cast<float>(GESTURE_DEBOUNCE_FRAMES);
 }
 
-GestureState GestureFSM::update(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+GestureState GestureFSM::update(const std::vector<Point3D>& landmarks,
                                  bool isRightHand) {
     if (landmarks.size() < 21) {
         handleHandLost();
@@ -95,7 +95,7 @@ void GestureFSM::transitionTo(GestureState newState) {
     }
 }
 
-GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+GestureState GestureFSM::detectGesture(const std::vector<Point3D>& landmarks,
                                         bool isRightHand) const {
     float handSize = getHandSize(landmarks);
     if (handSize < 0.001f) return GestureState::Idle;  // Invalid landmarks
@@ -119,7 +119,7 @@ GestureState GestureFSM::detectGesture(const std::vector<TrackingResult::Normali
     }
 }
 
-GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+GestureState GestureFSM::detectOpenHand(const std::vector<Point3D>& landmarks,
                                          bool isRightHand) const {
     using LI = LandmarkIndices;
 
@@ -174,26 +174,29 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
     // ═══════════════════════════════════════════════════════════
 
     // FIST: All fingers down ✊
-    // IMPROVED: Additional check - fingers should be CURLED, not just not-up
-    if (!thumbUp && !indexUp && !middleUp && !ringUp && !pinkyUp) {
-        // Additional verification: Tips should be close to palm (wrist)
-        // This prevents false FIST when fingers are pointing sideways
-        const auto& wrist = landmarks[LI::WRIST];
-        const auto& middleMcp = landmarks[LI::MIDDLE_MCP];
-        float handSize = distance2D(wrist, middleMcp);
-
-        // Check if fingertips are close to palm
-        float indexTipDist = distance2D(landmarks[LI::INDEX_TIP], middleMcp);
-        float middleTipDist = distance2D(landmarks[LI::MIDDLE_TIP], middleMcp);
-
-        // For FIST, tips should be within 1.5x hand size from MCP
-        // (curled fingers fold back towards palm)
-        bool fingersCurled = (indexTipDist < handSize * 1.5f) &&
-                            (middleTipDist < handSize * 1.5f);
-
-        // Accept FIST even if curl check fails (to handle edge cases)
-
+    // IMPROVED: More lenient detection using CURL instead of just Y-position
+    // This handles cases where fingers are partially visible or at angles
+    if (fingerCount == 0) {
+        // All fingers down - classic FIST
         return GestureState::Fist;
+    }
+
+    // LENIENT FIST: If only 1-2 fingers barely showing (likely false positives from landmarks)
+    // and thumb is down, treat as FIST
+    // This catches the common case where the model misdetects thumb as up,
+    // but other fingers are clearly curled
+    if (!thumbUp && fingerCount <= 2) {
+        // Additional curl check: Are remaining fingers actually extended or just noise?
+        using LI = LandmarkIndices;
+
+        // Check curl of index finger (most reliable)
+        float indexCurl = getFingerCurl(landmarks, LI::INDEX_MCP, LI::INDEX_PIP, LI::INDEX_DIP, LI::INDEX_TIP);
+        float middleCurl = getFingerCurl(landmarks, LI::MIDDLE_MCP, LI::MIDDLE_PIP, LI::MIDDLE_DIP, LI::MIDDLE_TIP);
+
+        // If both fingers are significantly curled (>0.6), treat as FIST despite noisy Y-detection
+        if (indexCurl > 0.6f && middleCurl > 0.6f) {
+            return GestureState::Fist;
+        }
     }
 
     // FIVE: All 5 fingers up 🖐️ - CHECK BEFORE FOUR!
@@ -312,7 +315,7 @@ GestureState GestureFSM::detectOpenHand(const std::vector<TrackingResult::Normal
 // Much more robust than complex angle calculations
 // ═══════════════════════════════════════════════════════════════════════════
 
-bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+bool GestureFSM::isFingerUp(const std::vector<Point3D>& landmarks,
                              int tipIdx, int pipIdx) const {
     // Simple check: Tip is HIGHER (smaller Y) than PIP joint
     // In image coordinates, Y=0 is top, so smaller Y = higher
@@ -323,7 +326,6 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
     // - Robust to viewing angle (always uses image Y coordinate)
 
     const auto& tip = landmarks[tipIdx];
-    const auto& pip = landmarks[pipIdx];
     const auto& mcp = landmarks[tipIdx - 3];  // MCP is 3 indices before TIP
 
     // ULTRA LENIENT: Use MCP instead of PIP for much larger range
@@ -333,10 +335,27 @@ bool GestureFSM::isFingerUp(const std::vector<TrackingResult::NormalizedPoint>& 
 
     // Use MCP comparison for more reliable detection
     // No threshold - just direct comparison
+
+    // ADDITIONAL: For FIST detection, also check distance
+    // If tip is VERY CLOSE to wrist/palm, it's likely curled (FIST)
+    // This catches case where Y-position is noisy but distance is clear
+    using LI = LandmarkIndices;
+    const auto& wrist = landmarks[LI::WRIST];
+    const auto& midMcp = landmarks[LI::MIDDLE_MCP];
+
+    float tipToPalmDist = distance2D(tip, midMcp);
+    float handSize = distance2D(wrist, midMcp);
+
+    // If tip is VERY close to palm (<0.8x hand size), it's likely curled
+    // Return false (not up) even if Y-position suggests otherwise
+    if (tipToPalmDist < handSize * 0.8f) {
+        return false;  // Curled/FIST
+    }
+
     return tip.y < mcp.y;
 }
 
-bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+bool GestureFSM::isThumbUp(const std::vector<Point3D>& landmarks,
                             bool isRightHand) const {
     // IMPROVED THUMB DETECTION for FIVE gesture
     // Problem: When hand is frontal to camera (FIVE gesture),
@@ -347,7 +366,6 @@ bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& l
 
     using LI = LandmarkIndices;
     const auto& thumbTip = landmarks[LI::THUMB_TIP];
-    const auto& thumbIP = landmarks[LI::THUMB_IP];
     const auto& thumbMCP = landmarks[LI::THUMB_MCP];
     const auto& indexMCP = landmarks[LI::INDEX_MCP];
     const auto& pinkyMCP = landmarks[LI::PINKY_MCP];
@@ -374,19 +392,19 @@ bool GestureFSM::isThumbUp(const std::vector<TrackingResult::NormalizedPoint>& l
     return thumbTipToPalmDist > thumbMCPToPalmDist * 0.8f;  // 80% threshold = very lenient
 }
 
-bool GestureFSM::isThumbExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+bool GestureFSM::isThumbExtended(const std::vector<Point3D>& landmarks,
                                   bool isRightHand) const {
     // Wrapper for consistency with old API
     return isThumbUp(landmarks, isRightHand);
 }
 
-bool GestureFSM::isFingerExtended(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+bool GestureFSM::isFingerExtended(const std::vector<Point3D>& landmarks,
                                    int mcp, int pip, int dip, int tip) const {
     // Use simple Y-based check for consistency
     return isFingerUp(landmarks, tip, pip);
 }
 
-float GestureFSM::getFingerCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+float GestureFSM::getFingerCurl(const std::vector<Point3D>& landmarks,
                                  int mcp, int pip, int dip, int tip) const {
     // ═══════════════════════════════════════════════════════════
     // Robust Finger Curl Detection (0.0 = extended, 1.0 = curled)
@@ -475,35 +493,35 @@ float GestureFSM::getFingerCurl(const std::vector<TrackingResult::NormalizedPoin
     return std::clamp(curl, 0.0f, 1.0f);
 }
 
-float GestureFSM::distance(const TrackingResult::NormalizedPoint& a,
-                           const TrackingResult::NormalizedPoint& b) const {
+float GestureFSM::distance(const Point3D& a,
+                           const Point3D& b) const {
     float dx = a.x - b.x;
     float dy = a.y - b.y;
     float dz = a.z - b.z;
     return std::sqrt(dx*dx + dy*dy + dz*dz);
 }
 
-float GestureFSM::distance2D(const TrackingResult::NormalizedPoint& a,
-                             const TrackingResult::NormalizedPoint& b) const {
+float GestureFSM::distance2D(const Point3D& a,
+                             const Point3D& b) const {
     float dx = a.x - b.x;
     float dy = a.y - b.y;
     return std::sqrt(dx*dx + dy*dy);
 }
 
-float GestureFSM::getHandSize(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
+float GestureFSM::getHandSize(const std::vector<Point3D>& landmarks) const {
     // Hand size = distance from wrist to middle finger MCP
     // This is stable across different poses
     using LI = LandmarkIndices;
     return distance(landmarks[LI::WRIST], landmarks[LI::MIDDLE_MCP]);
 }
 
-float GestureFSM::getPinchDistance(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
+float GestureFSM::getPinchDistance(const std::vector<Point3D>& landmarks) const {
     // Pinch = distance between thumb tip and index tip
     using LI = LandmarkIndices;
     return distance(landmarks[LI::THUMB_TIP], landmarks[LI::INDEX_TIP]);
 }
 
-float GestureFSM::getThumbCurl(const std::vector<TrackingResult::NormalizedPoint>& landmarks,
+float GestureFSM::getThumbCurl(const std::vector<Point3D>& landmarks,
                                 bool isRightHand) const {
     // For the curl value, we use the simple X-based check
     // Extended = 0.0, Curled = 1.0
@@ -523,7 +541,7 @@ float GestureFSM::getThumbCurl(const std::vector<TrackingResult::NormalizedPoint
     return extended ? 0.0f : 1.0f;
 }
 
-bool GestureFSM::isVulcanSpread(const std::vector<TrackingResult::NormalizedPoint>& landmarks) const {
+bool GestureFSM::isVulcanSpread(const std::vector<Point3D>& landmarks) const {
     // Vulcan: Check if there's a significant spread between middle and ring fingers
     // while index-middle and ring-pinky are close together
     using LI = LandmarkIndices;
