@@ -619,7 +619,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     cv::Scalar tipColor = (h == 0) ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 0, 255);
                     cv::Scalar lineColor = boxColor;
 
-                    // Calculate bounding box from all landmarks
+                    // Calculate bounding box from original landmarks (frame will be flipped once at the end)
                     float minX = 1.0f, maxX = 0.0f, minY = 1.0f, maxY = 0.0f;
                     for (const auto& lm : landmarks->landmarks) {
                         minX = std::min(minX, lm.x);
@@ -631,57 +631,33 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     // Add padding (10%)
                     float padX = (maxX - minX) * 0.1f;
                     float padY = (maxY - minY) * 0.1f;
+
                     int bx1 = static_cast<int>((minX - padX) * debugFrame.cols);
                     int by1 = static_cast<int>((minY - padY) * debugFrame.rows);
                     int bx2 = static_cast<int>((maxX + padX) * debugFrame.cols);
                     int by2 = static_cast<int>((maxY + padY) * debugFrame.rows);
 
+                    // Clamp bounding box to frame bounds
+                    bx1 = std::max(0, bx1);
+                    by1 = std::max(0, by1);
+                    bx2 = std::min(debugFrame.cols, bx2);
+                    by2 = std::min(debugFrame.rows, by2);
+
                     cv::rectangle(debugFrame, cv::Point(bx1, by1), cv::Point(bx2, by2), boxColor, 2);
 
-                    // Draw hand label
-                    // Note: Text will be mirrored after frame flip, so we draw it normally here
-                    // Position needs to account for the upcoming flip
+                    // Draw hand label (text NOT mirrored - must remain readable)
                     char labelStr[16];
                     snprintf(labelStr, sizeof(labelStr), "Hand %zu", h);
 
-                    // Calculate text size to position it correctly after mirror
-                    int baseline = 0;
-                    cv::Size textSize = cv::getTextSize(labelStr, cv::FONT_HERSHEY_SIMPLEX, 0.4, 1, &baseline);
-
-                    // After flip, bx1 will become (frameWidth - bx1)
-                    // We want text at the TOP LEFT of the box, so we draw at TOP RIGHT before flip
-                    int textX = bx2 - textSize.width;  // Right side (will be left after flip)
+                    // Place text at top-left of bbox
+                    int textX = bx1 + 5;
                     int textY = by1 - 5;
+                    if (textY < 15) textY = by2 + 15;  // Move below if too close to top
 
-                    // Draw mirrored text (flip horizontally so it reads correctly after frame flip)
-                    cv::Mat textROI;
-                    cv::Mat textImg = cv::Mat::zeros(textSize.height + baseline, textSize.width, CV_8UC3);
-                    cv::putText(textImg, labelStr, cv::Point(0, textSize.height),
+                    cv::putText(debugFrame, labelStr, cv::Point(textX, textY),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.4, boxColor, 1);
-                    cv::flip(textImg, textImg, 1);  // Flip text horizontally
 
-                    // Place flipped text on frame
-                    int y1 = std::max(0, textY - textSize.height);
-                    int y2 = std::min(debugFrame.rows, textY);
-                    int x1 = std::max(0, textX);
-                    int x2 = std::min(debugFrame.cols, textX + textSize.width);
-
-                    if (y2 > y1 && x2 > x1) {
-                        cv::Mat destROI = debugFrame(cv::Rect(x1, y1, x2 - x1, y2 - y1));
-                        cv::Mat srcROI = textImg(cv::Rect(0, 0, x2 - x1, y2 - y1));
-
-                        // Blend text (white pixels from text)
-                        for (int row = 0; row < srcROI.rows; ++row) {
-                            for (int col = 0; col < srcROI.cols; ++col) {
-                                cv::Vec3b pixel = srcROI.at<cv::Vec3b>(row, col);
-                                if (pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0) {
-                                    destROI.at<cv::Vec3b>(row, col) = pixel;
-                                }
-                            }
-                        }
-                    }
-
-                    // Draw landmarks
+                    // Draw landmarks (no manual mirroring; full frame is flipped once at the end)
                     for (size_t i = 0; i < landmarks->landmarks.size(); ++i) {
                         int lx = static_cast<int>(landmarks->landmarks[i].x * debugFrame.cols);
                         int ly = static_cast<int>(landmarks->landmarks[i].y * debugFrame.rows);
@@ -690,7 +666,7 @@ void ProcessingLoop::processFrame(Frame* frame) {
                         cv::circle(debugFrame, cv::Point(lx, ly), 3, color, -1);
                     }
 
-                    // Skeleton
+                    // Skeleton (no manual mirroring; final frame flip handles orientation)
                     const int conns[][2] = {{0,1},{1,2},{2,3},{3,4},{0,5},{5,6},{6,7},{7,8},
                         {0,9},{9,10},{10,11},{11,12},{0,13},{13,14},{14,15},{15,16},
                         {0,17},{17,18},{18,19},{19,20}};
@@ -706,22 +682,35 @@ void ProcessingLoop::processFrame(Frame* frame) {
                     }
                 }
 
-                // Kalman + Gesture (per hand)
-                float palmZ = 0.0f;
-                float depthMm = -1.0f;  // Store depth for display
+                // ═══════════════════════════════════════════════════════════
+                // Phase 3: Stereo Depth - ROBUST Z computation
+                // ═══════════════════════════════════════════════════════════
+                // Strategy:
+                // 1. Validate depth values (reject outliers)
+                // 2. Use last valid depth if current measurement invalid
+                // 3. Never send 0.0 or extreme values to client
+                // 4. Smooth transitions between valid depths
+                // ═══════════════════════════════════════════════════════════
 
-                // Phase 3: Stereo Depth - compute Z at palm center - WITH TIMING AND CACHING
-                // OPTIMIZATION: Cache depth for 3 frames (depth changes slowly)
+                // Per-hand persistent state for depth
+                static float lastValidDepth[MAX_HANDS] = {2000.0f, 2000.0f};  // Default: 2m
+                static float lastValidZ[MAX_HANDS] = {0.5f, 0.5f};             // Default: Mid-range
+                static int invalidDepthCount[MAX_HANDS] = {0, 0};
+
+                float palmZ = lastValidZ[h];  // Start with last valid Z (no jumping to 0!)
+                float depthMm = -1.0f;        // Current depth measurement
+
+                // OPTIMIZATION: Cache depth for 2 frames (depth changes slowly)
                 static int stereoSkipCounter = 0;
                 static float cachedDepth[MAX_HANDS] = {-1.0f, -1.0f};
-                bool shouldRunStereo = (stereoSkipCounter++ % 3 == 0);
+                bool shouldRunStereo = (stereoSkipCounter++ % 2 == 0);  // Every 2nd frame
 
                 auto stereoStart = std::chrono::high_resolution_clock::now();
                 if (_stereoInitialized && frame->hasStereoData &&
                     frame->monoLeftData && frame->monoRightData) {
 
                     if (shouldRunStereo) {
-                        // Compute depth (every 3rd frame)
+                        // Compute depth (every 2nd frame)
                         int palmPxX = static_cast<int>(landmarks->palmCenterX * frame->monoWidth);
                         int palmPxY = static_cast<int>(landmarks->palmCenterY * frame->monoHeight);
 
@@ -732,29 +721,77 @@ void ProcessingLoop::processFrame(Frame* frame) {
                             static_cast<int>(frame->monoHeight),
                             palmPxX, palmPxY
                         );
-                        cachedDepth[h] = depthMm;  // Cache for next 2 frames
+
+                        // ═══════════════════════════════════════════════════════════
+                        // VALIDATION: Reject invalid/extreme depth values
+                        // Configured for 1.40m standing distance (torso @ 1.40m, reach to 2.0m)
+                        // ═══════════════════════════════════════════════════════════
+                        const float MIN_VALID_DEPTH_MM = 1000.0f;   // 1.0m (hand min distance from torso)
+                        const float MAX_VALID_DEPTH_MM = 2000.0f;   // 2.0m (1.40m standing + 60cm reach)
+                        const float MAX_DEPTH_JUMP = 1000.0f;       // Max change per frame (1m = realistic fast movement)
+
+                        bool isValid = (depthMm > MIN_VALID_DEPTH_MM &&
+                                       depthMm < MAX_VALID_DEPTH_MM);
+
+                        // Check for extreme jumps (noise/outlier detection)
+                        if (isValid && lastValidDepth[h] > 0) {
+                            float depthChange = std::abs(depthMm - lastValidDepth[h]);
+                            if (depthChange > MAX_DEPTH_JUMP) {
+                                isValid = false;  // Reject: too large jump = likely noise
+                                Logger::warn("Depth outlier rejected (Hand ", h, "): ",
+                                           depthMm, "mm (jump: ", depthChange, "mm)");
+                            }
+                        }
+
+                        if (isValid) {
+                            // Valid depth: Update cache and persistent state
+                            cachedDepth[h] = depthMm;
+                            lastValidDepth[h] = depthMm;
+                            invalidDepthCount[h] = 0;
+
+                            // Convert mm to normalized Z (0.0 - 1.0) for Game Volume
+                            // PlayVolume: minZ=500mm, maxZ=2500mm → Z_RANGE=2000mm
+                            // Formula: (depthMm - 500) / 2000
+                            // Example: 2000mm (2m) → (2000-500)/2000 = 0.75
+                            //          1500mm (1.5m) → (1500-500)/2000 = 0.50
+                            // This gives 50cm movement → 0.25 Z-change (25% of volume)
+                            const float Z_MIN_MM = _playVolume->minZ;
+                            const float Z_MAX_MM = _playVolume->maxZ;
+                            const float Z_RANGE_MM = Z_MAX_MM - Z_MIN_MM;
+
+                            palmZ = (depthMm - Z_MIN_MM) / Z_RANGE_MM;
+                            palmZ = std::max(0.0f, std::min(1.0f, palmZ));  // Clamp to [0,1]
+                            lastValidZ[h] = palmZ;  // Store for fallback
+
+                            // Debug log (every 30 frames)
+                            static int depthLogCounter = 0;
+                            if (++depthLogCounter % 30 == 1) {
+                                Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (",
+                                            depthMm / 1000.0f, "m) → Z=", palmZ,
+                                            " (range: ", Z_MIN_MM, "-", Z_MAX_MM, "mm)");
+                            }
+                        } else {
+                            // Invalid depth: Use last valid value (fallback)
+                            invalidDepthCount[h]++;
+                            depthMm = lastValidDepth[h];  // For display
+                            palmZ = lastValidZ[h];        // For tracking
+
+                            if (invalidDepthCount[h] == 1) {  // Log once per error sequence
+                                Logger::warn("Invalid depth (Hand ", h, "), using last valid: ",
+                                           lastValidDepth[h], "mm (Z=", palmZ, ")");
+                            }
+                        }
                     } else {
-                        // Use cached depth
+                        // Use cached depth (skip computation)
                         depthMm = cachedDepth[h];
-                    }
-
-                    if (depthMm > 0) {
-                        // Convert mm to normalized Z (0.0 - 1.0) for Game Volume
-                        palmZ = (depthMm - Z_MIN_MM) / Z_RANGE_MM;
-                        palmZ = std::max(0.0f, std::min(1.0f, palmZ));  // Clamp to [0,1]
-
-                        // Debug log (every 30 frames)
-                        static int depthLogCounter = 0;
-                        if (++depthLogCounter % 30 == 1) {
-                            Logger::info("📐 Hand ", h, " depth: ", depthMm, "mm (",
-                                        depthMm / 1000.0f, "m) → Z=", palmZ);
-                        }
-
-                        // Display depth at hand in preview (before frame flip)
-                        if (!debugFrame.empty()) {
-                            // ...existing depth display code...
+                        if (depthMm > 0) {
+                            palmZ = lastValidZ[h];  // Use last valid Z
                         }
                     }
+                } else {
+                    // Stereo not available: Use last valid depth (graceful degradation)
+                    depthMm = lastValidDepth[h];
+                    palmZ = lastValidZ[h];
                 }
                 auto stereoEnd = std::chrono::high_resolution_clock::now();
                 totalStereoTime += std::chrono::duration_cast<std::chrono::microseconds>(stereoEnd - stereoStart).count();
@@ -766,10 +803,13 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 std::vector<Point3D> lmPoints;
                 for (const auto& lm : landmarks->landmarks) lmPoints.push_back(lm);
 
-                // Determine handedness: Use palm X position as heuristic
-                // Right hand typically appears on the left side of the image (mirrored view)
-                // Left hand typically appears on the right side
-                bool isRightHand = landmarks->palmCenterX < 0.5f;
+                // Determine handedness from thumb position (LM 4) relative to palm center
+                // Right Hand: Thumb left of palm → thumb_x < palm_center_x
+                // Left Hand: Thumb right of palm → thumb_x > palm_center_x
+                bool isRightHand = false;
+                if (landmarks->landmarks.size() > 4) {
+                    isRightHand = landmarks->landmarks[4].x < landmarks->palmCenterX;
+                }
 
                 auto gesture = _gestureFSMs[h]->update(lmPoints, isRightHand);
 
@@ -806,18 +846,27 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 // Build TrackingResult for OSC
                 TrackingResult result;
                 result.handId = static_cast<int>(h);  // Hand ID for OSC routing
-                result.palmPosition = _handTrackers[h]->getPosition();
+                result.isRightHand = isRightHand;    // Handedness from thumb position
+
+                // Get position from Kalman tracker (camera coordinates)
+                Point3D trackedPos = _handTrackers[h]->getPosition();
+
+                // MIRROR for game controller UX (like Kinect/Leap Motion):
+                // Player moves right → Actor moves right (mirror metaphor)
+                // X: Mirror horizontally (0=left becomes 0=right in game)
+                // Y: Invert vertically (0=top becomes 0=bottom for Unreal)
+                result.palmPosition.x = 1.0f - trackedPos.x;  // ← X mirrored for intuitive control!
+                result.palmPosition.y = 1.0f - trackedPos.y;  // ← Y inverted for Unreal coords
+                result.palmPosition.z = trackedPos.z;
+
                 result.velocity = _handTrackers[h]->getVelocity();
-
-                // Calculate delta (acceleration) from velocity change (pre-inversion)
+                // Mirror/invert velocity to match position transform
+                result.velocity.vx = -result.velocity.vx;  // ← X velocity mirrored
+                result.velocity.vy = -result.velocity.vy;  // ← Y velocity inverted
+                // Calculate delta (acceleration) from velocity change (after Y-inversion)
                 result.delta.dx = result.velocity.vx - _handStates[h].prevVelX;
-                result.delta.dy = result.velocity.vy - _handStates[h].prevVelY;
+                result.delta.dy = result.velocity.vy - _handStates[h].prevVelY;  // Already inverted
                 result.delta.dz = result.velocity.vz - _handStates[h].prevVelZ;
-
-                // No Y-axis inversion - send raw camera coordinates to OSC
-                // (Y=0 at top, Y=1 at bottom - standard image coordinates)
-
-                result.gesture = gesture;
                 result.gestureConfidence = _gestureFSMs[h]->getConfidence();  // 0-1 confidence
                 result.palmConfidence = palmDetection.score;  // Palm detection score
                 result.landmarkPresence = landmarks->presence;  // Landmark presence confidence
@@ -837,14 +886,16 @@ void ProcessingLoop::processFrame(Frame* frame) {
                 _handStates[h].deltaY = result.delta.dy;
                 _handStates[h].deltaZ = result.delta.dz;
 
-                // Store current velocity for next frame's delta (non-inverted)
-                _handStates[h].prevVelX = _handTrackers[h]->getVelocity().vx;
-                _handStates[h].prevVelY = _handTrackers[h]->getVelocity().vy;
-                _handStates[h].prevVelZ = _handTrackers[h]->getVelocity().vz;
+                // Store current velocity for next frame's delta (MIRRORED + INVERTED!)
+                _handStates[h].prevVelX = result.velocity.vx;      // X: mirrored
+                _handStates[h].prevVelY = result.velocity.vy;      // Y: inverted
+                _handStates[h].prevVelZ = result.velocity.vz;      // Z: normal
 
-                _handStates[h].velX = _handTrackers[h]->getVelocity().vx;
-                _handStates[h].velY = _handTrackers[h]->getVelocity().vy;
-                _handStates[h].velZ = _handTrackers[h]->getVelocity().vz;
+                // Also store raw velocity for visualization
+                Velocity3D rawVelocity = _handTrackers[h]->getVelocity();
+                _handStates[h].velX = -rawVelocity.vx;  // Mirrored for display
+                _handStates[h].velY = -rawVelocity.vy;  // Inverted for display
+                _handStates[h].velZ = rawVelocity.vz;
                 _handStates[h].gesture = GestureFSM::getStateName(gesture);
                 _handStates[h].vipLocked = result.vipLocked;
                 _handStates[h].isRightHand = isRightHand;  // Store handedness for visualization
@@ -868,8 +919,9 @@ void ProcessingLoop::processFrame(Frame* frame) {
     auto drawStart = std::chrono::high_resolution_clock::now();
     long long jpegDuration = 0;
     if (shouldRenderDebug && !debugFrame.empty()) {
-        // Mirror camera image horizontally BEFORE drawing overlay
-        cv::flip(debugFrame, debugFrame, 1);  // 1 = horizontal flip
+        // Mirror preview for intuitive game controller feedback (like a mirror)
+        // Player sees themselves mirrored - matches OSC coordinate transform
+        cv::flip(debugFrame, debugFrame, 1);  // Horizontal flip
 
         drawDebugOverlay(debugFrame, frame);
 
@@ -977,21 +1029,18 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
             cv::rectangle(debugFrame, faceRect, cv::Scalar(200, 100, 255), 1, cv::LINE_AA);
         }
 
-        // Draw lines from faces to nearest hands (if detected)
-        // NOTE: Frame is already flipped horizontally BEFORE this function is called.
-        // All coordinates here are in flipped space, so we must mirror normalized hand coords and face centers.
+        // Draw lines from faces to nearest hands (frame is flipped once at the end)
         if (_lastHandCount > 0 && !faceRects.empty()) {
             for (const auto& faceRect : faceRects) {
-                // Mirror face center because frame is flipped (x' = width - x)
-                int faceCenterX = debugFrame.cols - (faceRect.x + faceRect.width / 2);
+                int faceCenterX = faceRect.x + faceRect.width / 2;
                 int faceCenterY = faceRect.y + faceRect.height / 2;
 
-                // Find nearest hand to this face (mirror hand X as well)
+                // Find nearest hand (no manual mirroring here)
                 float minDist = std::numeric_limits<float>::max();
                 int nearestHandIdx = -1;
 
                 for (int h = 0; h < _lastHandCount && h < MAX_HANDS; ++h) {
-                    int handPixelX = static_cast<int>((1.0f - _handStates[h].palmX) * debugFrame.cols);
+                    int handPixelX = static_cast<int>(_handStates[h].palmX * debugFrame.cols);
                     int handPixelY = static_cast<int>(_handStates[h].palmY * debugFrame.rows);
 
                     float dist = std::sqrt(std::pow(handPixelX - faceCenterX, 2) +
@@ -1005,7 +1054,7 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
 
                 // Draw line from face to nearest hand
                 if (nearestHandIdx >= 0) {
-                    int handPixelX = static_cast<int>((1.0f - _handStates[nearestHandIdx].palmX) * debugFrame.cols);
+                    int handPixelX = static_cast<int>(_handStates[nearestHandIdx].palmX * debugFrame.cols);
                     int handPixelY = static_cast<int>(_handStates[nearestHandIdx].palmY * debugFrame.rows);
 
                     cv::line(debugFrame, cv::Point(faceCenterX, faceCenterY),
@@ -1023,7 +1072,6 @@ void ProcessingLoop::drawDebugOverlay(cv::Mat& debugFrame, Frame* frame) {
                     cv::Mat distTextImg = cv::Mat::zeros(distTextSize.height + baseline, distTextSize.width, CV_8UC3);
                     cv::putText(distTextImg, distStr, cv::Point(0, distTextSize.height),
                                cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(255, 100, 200), 1);
-                    // No flip needed here because hand/face are already mirrored above
 
                     int dtx1 = std::max(0, midX - distTextSize.width / 2);
                     int dtx2 = std::min(debugFrame.cols, dtx1 + distTextSize.width);

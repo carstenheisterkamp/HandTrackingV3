@@ -1,5 +1,21 @@
 # COPILOT WORKING RULES - STRICT ENFORCEMENT
 
+## 🚨 TL;DR - ABSOLUTE NON-NEGOTIABLE RULES
+
+**IMMER vor Aktion prüfen:**
+1. ✅ Darf ich das überhaupt machen? (In TODO.md oder copilot-instructions.md?)
+2. ✅ Frage ich vorher oder mache ich einfach? (Architektur-Changes = IMMER FRAGEN!)
+3. ✅ Verschwende ich Tokens mit Narrative? (Nein! Kurz & prägnant!)
+4. ✅ Erstelle ich eine neue Datei? (STOP - warum?)
+5. ✅ Bin ich fokussiert auf aktuelles TODO? (Keine Umschweife!)
+
+**WENN User frustriert:**
+- STOP. Nicht weitermachen.
+- Kurz zusammenfassen was gemacht wurde.
+- WARTEN auf Instruktion.
+
+---
+
 ## 🚨 ABSOLUTE RULES (NEVER VIOLATE)
 
 ### 1. NO ARCHITECTURE CHANGES WITHOUT EXPLICIT APPROVAL

@@ -114,13 +114,14 @@ void HandTracker::update(const Point3D& measurement) {
 
     // Kalman gain: K = P * H^T * S^-1
     // For our measurement model, K is 6x3 but we compute column by column
+    // K[0..2] = position gains, K[3..5] = velocity gains
     std::array<float, 6> K{};
-    K[0] = P_[0 * 6 + 0] / S0;
-    K[1] = P_[1 * 6 + 1] / S1;
-    K[2] = P_[2 * 6 + 2] / S2;
-    K[3] = P_[3 * 6 + 0] / S0;  // vx gain from x measurement
-    K[4] = P_[4 * 6 + 1] / S1;  // vy gain from y measurement
-    K[5] = P_[5 * 6 + 2] / S2;  // vz gain from z measurement
+    K[0] = P_[0 * 6 + 0] / S0;  // Position X gain
+    K[1] = P_[1 * 6 + 1] / S1;  // Position Y gain
+    K[2] = P_[2 * 6 + 2] / S2;  // Position Z gain
+    K[3] = P_[3 * 6 + 0] / S0;  // Velocity X gain from X position measurement
+    K[4] = P_[4 * 6 + 1] / S1;  // Velocity Y gain from Y position measurement
+    K[5] = P_[5 * 6 + 2] / S2;  // Velocity Z gain from Z position measurement
 
     // State update: x = x + K * y
     state_[0] += K[0] * y0;

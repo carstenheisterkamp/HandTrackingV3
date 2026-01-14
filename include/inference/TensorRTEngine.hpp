@@ -99,6 +99,11 @@ public:
     [[nodiscard]] bool isLoaded() const { return loaded_; }
 
     /**
+     * Get CUDA stream (for advanced usage)
+     */
+    void* getCudaStream() const { return cudaStream_; }
+
+    /**
      * Get model path
      */
     [[nodiscard]] const std::string& getModelPath() const { return modelPath_; }
@@ -119,6 +124,9 @@ private:
     // CUDA buffers - supports multiple outputs
     void* d_input_ = nullptr;
     std::vector<void*> d_outputs_;
+
+    // CUDA stream for async inference (performance optimization)
+    void* cudaStream_ = nullptr;
 
     // Helper methods
     bool loadEngine(const std::string& enginePath);

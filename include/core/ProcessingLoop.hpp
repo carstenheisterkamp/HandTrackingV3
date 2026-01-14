@@ -140,6 +140,7 @@ private:
         float palmX = 0.0f, palmY = 0.0f, palmZ = 0.0f;
         float velX = 0.0f, velY = 0.0f, velZ = 0.0f;
         float deltaX = 0.0f, deltaY = 0.0f, deltaZ = 0.0f;  // Acceleration/Delta
+        float depthMm = 0.0f;  // Actual depth in mm (for debug display)
         std::string gesture = "None";
         bool vipLocked = false;
         bool isRightHand = false;  // Phase 4: Handedness for visualization

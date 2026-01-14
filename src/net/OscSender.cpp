@@ -79,10 +79,49 @@ void OscSender::loop() {
 void OscSender::send(const core::TrackingResult& result) {
     if (!_loAddress) return;
 
+    // ═══════════════════════════════════════════════════════════
+    // Handle Session Events FIRST (if present)
+    // ═══════════════════════════════════════════════════════════
+    if (!result.osc_event.empty()) {
+        // Session events: /player/session/enter or /player/session/exit
+        // No arguments - just send the event
+        lo_send_message(_loAddress, result.osc_event.c_str(), lo_message_new());
+        return;  // Don't send tracking data for session events
+    }
+
     // Build OSC path with hand ID (e.g., /hand/0/palm or /hand/1/palm)
     std::string handPrefix = "/hand/" + std::to_string(result.handId);
 
-    // V3: Send palm position (all coordinates normalized to 0.0-1.0)
+    // ═══════════════════════════════════════════════════════════
+    // OPTIMIZED OSC ORDER for Client-Side Efficiency
+    // ═══════════════════════════════════════════════════════════
+    // 1. Confidence FIRST - Client can early-reject low-quality data
+    // 2. Velocity - Client can use for prediction while waiting for Palm
+    // 3. Palm Position - Main tracking data (uses confidence for filtering)
+    // 4. Delta & Gesture - Secondary data, order doesn't matter
+    // ═══════════════════════════════════════════════════════════
+
+    // 1️⃣ FIRST: Send confidence values (for early filtering in client)
+    // Format: /hand/{id}/confidence [palm_conf, gesture_conf, landmark_conf]
+    // Reordered: Palm confidence first (most important for position filtering)
+    lo_message confMsg = lo_message_new();
+    lo_message_add_float(confMsg, static_cast<float>(result.palmConfidence));
+    lo_message_add_float(confMsg, static_cast<float>(result.gestureConfidence));
+    lo_message_add_float(confMsg, static_cast<float>(result.landmarkPresence));
+    lo_send_message(_loAddress, (handPrefix + "/confidence").c_str(), confMsg);
+    lo_message_free(confMsg);
+
+    // 2️⃣ SECOND: Send velocity (client can use for prediction)
+    // Change in position per frame, normalized coords
+    lo_message velMsg = lo_message_new();
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vx));
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vy));
+    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vz));
+    lo_send_message(_loAddress, (handPrefix + "/velocity").c_str(), velMsg);
+    lo_message_free(velMsg);
+
+    // 3️⃣ THIRD: Send palm position (main tracking data)
+    // All coordinates normalized to 0.0-1.0
     // X, Y: Image coordinates (0=left/top, 1=right/bottom)
     // Z: Depth normalized to play volume (0=1.2m close, 1=2.8m far)
     // Game Engine can scale this 0-1 range to ANY world size
@@ -93,15 +132,7 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_send_message(_loAddress, (handPrefix + "/palm").c_str(), palmMsg);
     lo_message_free(palmMsg);
 
-    // V3: Send velocity (change in position per frame, normalized coords)
-    lo_message velMsg = lo_message_new();
-    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vx));
-    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vy));
-    lo_message_add_float(velMsg, static_cast<float>(result.velocity.vz));
-    lo_send_message(_loAddress, (handPrefix + "/velocity").c_str(), velMsg);
-    lo_message_free(velMsg);
-
-    // V3: Send delta (acceleration - change in velocity per frame)
+    // 4️⃣ Send delta (acceleration - change in velocity per frame)
     // All coordinates are normalized
     lo_message deltaMsg = lo_message_new();
     lo_message_add_float(deltaMsg, static_cast<float>(result.delta.dx));
@@ -110,7 +141,7 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_send_message(_loAddress, (handPrefix + "/delta").c_str(), deltaMsg);
     lo_message_free(deltaMsg);
 
-    // V3: Send gesture (normalized confidence 0-1)
+    // 5️⃣ Send gesture (normalized confidence 0-1)
     lo_message gestMsg = lo_message_new();
     lo_message_add_int32(gestMsg, static_cast<int32_t>(result.gesture));
     lo_message_add_float(gestMsg, static_cast<float>(result.gestureConfidence));
@@ -118,16 +149,25 @@ void OscSender::send(const core::TrackingResult& result) {
     lo_send_message(_loAddress, (handPrefix + "/gesture").c_str(), gestMsg);
     lo_message_free(gestMsg);
 
-    // V3: Send confidence values (for filtering in Unreal)
-    // Format: /hand/{id}/confidence [gesture_conf, palm_conf, landmark_conf]
-    lo_message confMsg = lo_message_new();
-    lo_message_add_float(confMsg, static_cast<float>(result.gestureConfidence));
-    lo_message_add_float(confMsg, static_cast<float>(result.palmConfidence));
-    lo_message_add_float(confMsg, static_cast<float>(result.landmarkPresence));
-    lo_send_message(_loAddress, (handPrefix + "/confidence").c_str(), confMsg);
-    lo_message_free(confMsg);
+    // 6️⃣ Send handedness (geometric from thumb position)
+    // 1 = Right Hand, 0 = Left Hand
+    lo_message handednessMsg = lo_message_new();
+    lo_message_add_int32(handednessMsg, result.isRightHand ? 1 : 0);
+    lo_send_message(_loAddress, (handPrefix + "/handedness").c_str(), handednessMsg);
+    lo_message_free(handednessMsg);
 
-    // Note: Removed /vip message as it's legacy and not needed anymore
+    // 7️⃣ Send landmarks (21 points × 3 coords = 63 floats)
+    // Raw camera coordinates (NOT mirrored)
+    if (!result.landmarks.empty()) {
+        lo_message landmarkMsg = lo_message_new();
+        for (const auto& lm : result.landmarks) {
+            lo_message_add_float(landmarkMsg, static_cast<float>(lm.x));
+            lo_message_add_float(landmarkMsg, static_cast<float>(lm.y));
+            lo_message_add_float(landmarkMsg, static_cast<float>(lm.z));
+        }
+        lo_send_message(_loAddress, (handPrefix + "/landmarks").c_str(), landmarkMsg);
+        lo_message_free(landmarkMsg);
+    }
 }
 
 } // namespace net

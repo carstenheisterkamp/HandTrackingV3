@@ -120,6 +120,7 @@ struct TrackingResult {
     // Hand identification
     int handId = 0;  // Hand ID (0 or 1)
     bool vipLocked = false;  // VIP lock status
+    bool isRightHand = false;  // Handedness: true=right, false=left (from thumb position)
     std::chrono::steady_clock::time_point timestamp;
 
     // V3: Palm center (Kalman filtered, predicted)

@@ -93,6 +93,49 @@ Keep this short reference at hand — it captures the device features and the en
 
 In Dokumentation IMMER `100.101.16.21` statt `localhost` verwenden!
 
+## 💬 Kommunikations-Stil (Token-Effizienz)
+
+**KRITISCH:** Antworte KURZ und PRÄGNANT - KEINE narrativen Umschreibungen!
+
+```
+❌ FALSCH (Token-Verschwendung):
+"Ich schaue mir den Code an. Lasse mich nach der Bounding Box suchen. 
+Ich sehe hier ein Problem mit der Spiegelung..."
+
+✅ RICHTIG (Effizient):
+**Problem:** Bounding Box Text wurde fälschlicherweise gespiegelt → unlesbar
+**Fix:** Text-Vorab-Spiegelung entfernt, nur Skelett/Box gespiegelt
+**Ergebnis:** Konsistente Spiegelung, Text lesbar ✓
+```
+
+**Regeln:**
+- KEINE "Ich schaue mir an / Lasse mich suchen / Ich sehe"-Narrative
+- DIREKT zur Aktion (Datei lesen → Edit machen)
+- Nach Änderung: MAX 3-4 Zeilen (Problem/Fix/Ergebnis)
+- Code-Snippets NUR wenn User explizit fragt
+- Keine Erklärungen von Standard-Funktionen (putText, cv::flip, etc.)
+- Kurze Bullet Points statt vollständige Sätze
+
+**⚠️ ABER: Code-Qualität ist NICHT verhandelbar!**
+- Effizienz in Kommunikation, NICHT in Code-Standards
+- Alle Best Practices bleiben: RAII, null-checks, error handling, formatting
+- Validierung nach Änderungen (get_errors, compile checks) ist PFLICHT
+- Keine Quick-and-Dirty-Lösungen nur um Tokens zu sparen
+
+## 🔍 MANDATORY PRE-ACTION CHECKLIST
+
+**VOR JEDER ÄNDERUNG diese 5 Fragen selbst beantworten:**
+
+1. **Erlaubt?** - Steht das in TODO.md oder copilot-instructions.md?
+2. **Architektur-Change?** - Wenn ja → IMMER FRAGEN, nicht einfach machen!
+3. **Token-Effizienz?** - Kurz & prägnant, ABER Code-Qualität intact?
+4. **Neue Datei?** - Wenn ja → WARUM? STOP und kurz erklären
+5. **Fokus?** - Arbeite ich am aktuellen TODO oder schweife ich ab?
+
+**Wenn eine Frage unklar:** → USER FRAGEN, nicht raten!
+
+---
+
 ## 📝 Documentation Standards
 
 * **NO new .md files without explicit approval:** The `docs/` folder must stay clean and focused. Only create new documentation files if the user explicitly requests it.

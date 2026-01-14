@@ -25,12 +25,22 @@ int main() {
 
     core::Logger::info("Starting HandTrackingService V3...");
 
-    // Log System Performance (informational only)
-    core::Logger::info("System: ", core::SystemMonitor::getPerformanceSummary());
+    // Check MAXN mode - warn if not active but don't block startup
+    core::Logger::info("═══════════════════════════════════════════════");
+    core::Logger::info("SYSTEM PERFORMANCE CHECK");
+    core::Logger::info("═══════════════════════════════════════════════");
     auto perf = core::SystemMonitor::getPerformanceStatus();
-    if (perf.powerMode != "MAXN") {
-        core::Logger::warn("Not in MAXN mode! Run: sudo nvpmodel -m 0 && sudo jetson_clocks");
+    core::Logger::info("System: ", core::SystemMonitor::getPerformanceSummary());
+
+    if (!perf.isMaxPerformance) {
+        core::Logger::warn("⚠️  NOT running in MAXN mode!");
+        core::Logger::warn("   Performance may be reduced (CPU/GPU throttled)");
+        core::Logger::warn("   To enable: bash scripts/fix_performance.sh");
+        core::Logger::warn("   Or run: sudo nvpmodel -m 0 && sudo jetson_clocks");
+    } else {
+        core::Logger::info("✓ System running at maximum performance (MAXN/15W)");
     }
+    core::Logger::info("═══════════════════════════════════════════════");
 
     // Configuration Constants
     const std::string OSC_HOST = "169.254.1.100";  // OSC Target (Unreal Engine)

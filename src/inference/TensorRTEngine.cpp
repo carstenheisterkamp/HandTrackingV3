@@ -16,6 +16,7 @@
 
 #include <fstream>
 #include <filesystem>
+#include <chrono>
 
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
@@ -51,10 +52,19 @@ public:
 
 static TRTLogger gLogger;
 
-TensorRTEngine::TensorRTEngine() = default;
+TensorRTEngine::TensorRTEngine() {
+    // Create dedicated CUDA stream for TensorRT inference (performance optimization)
+    cudaStreamCreate(reinterpret_cast<cudaStream_t*>(&cudaStream_));
+}
 
 TensorRTEngine::~TensorRTEngine() {
     freeBuffers();
+
+    // Destroy CUDA stream
+    if (cudaStream_) {
+        cudaStreamDestroy(reinterpret_cast<cudaStream_t>(cudaStream_));
+        cudaStream_ = nullptr;
+    }
 
     if (context_) {
         delete context_;
@@ -106,7 +116,13 @@ bool TensorRTEngine::load(const Config& config) {
         }
 
         if (needsBuild) {
-            core::Logger::info("Building TensorRT engine from ONNX: ", config.modelPath);
+            core::Logger::warn("⚠️  TensorRT engine not found or outdated!");
+            core::Logger::warn("   This may be from a different Jetson device");
+            core::Logger::warn("   Building optimized engine for current device...");
+            core::Logger::warn("   (This takes 20-45 seconds on first run)");
+
+            auto tStart = std::chrono::high_resolution_clock::now();
+
             // Try to build in primary location first
             if (!buildEngine(config.modelPath, primaryPath)) {
                 // If that fails, try /tmp as fallback
@@ -119,8 +135,12 @@ bool TensorRTEngine::load(const Config& config) {
             } else {
                 enginePath = primaryPath;  // Successfully built in primary
             }
+
+            auto tEnd = std::chrono::high_resolution_clock::now();
+            auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
+            core::Logger::info("✓ TensorRT engine built successfully in ", buildMs, " ms");
         } else {
-            core::Logger::info("Using cached TensorRT engine: ", enginePath);
+            core::Logger::info("✓ Using cached TensorRT engine: ", enginePath);
         }
     } else {
         core::Logger::error("Unknown model format: ", ext);
@@ -557,8 +577,8 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
         }
     }
 
-    // Run inference (async on default stream)
-    bool success = context_->enqueueV3(nullptr);
+    // Run inference (async on dedicated stream - PERFORMANCE OPTIMIZED)
+    bool success = context_->enqueueV3(reinterpret_cast<cudaStream_t>(cudaStream_));
 
     if (!success) {
         core::Logger::error("Inference failed");
@@ -566,7 +586,7 @@ bool TensorRTEngine::infer(const void* inputData, void* outputData) {
     }
 
     // CRITICAL: Synchronize before copying output (enqueueV3 is async!)
-    cudaStreamSynchronize(nullptr);
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cudaStream_));
 
     // Copy FIRST output to host (for backwards compatibility)
     if (!outputInfos_.empty() && !d_outputs_.empty()) {
@@ -619,15 +639,15 @@ bool TensorRTEngine::inferMultiOutput(const void* inputData, std::vector<void*>&
         }
     }
 
-    // Run inference
-    bool success = context_->enqueueV3(nullptr);
+    // Run inference (async on dedicated stream)
+    bool success = context_->enqueueV3(reinterpret_cast<cudaStream_t>(cudaStream_));
     if (!success) {
         core::Logger::error("Inference failed");
         return false;
     }
 
     // Synchronize
-    cudaStreamSynchronize(nullptr);
+    cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(cudaStream_));
 
     // Copy ALL outputs to host
     for (size_t i = 0; i < outputInfos_.size(); ++i) {

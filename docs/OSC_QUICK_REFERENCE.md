@@ -10,20 +10,57 @@
 ## 🎮 Aktuell Implementiert (Live) ✅
 
 ### Hand Tracking (Pro Hand)
-```
-/hand/0/palm           [x, y, z]        # Palm Position (0-1 normalized)
-/hand/0/velocity       [vx, vy, vz]     # Velocity (mm/s, Kalman gefiltert)
-/hand/0/delta          [dx, dy, dz]     # Acceleration (mm/s², change in velocity)
-/hand/0/gesture        [id, conf, name] # [State-ID, Confidence, Name]
 
-/hand/1/palm           [x, y, z]        # Zweite Hand (wenn erkannt)
-/hand/1/velocity       [vx, vy, vz]     # Velocity (mm/s)
-/hand/1/delta          [dx, dy, dz]     # Acceleration (mm/s²)
+**OSC-Reihenfolge (optimiert für Client-Effizienz):**
+```
+1️⃣ /hand/0/confidence     [palm, gesture, landmark]  ⬅️ ZUERST (Early Rejection)
+2️⃣ /hand/0/velocity       [vx, vy, vz]               (Prediction während Palm-Warten)
+3️⃣ /hand/0/palm           [x, y, z]                  ⬅️ Hauptdaten (0-1 normalized)
+4️⃣ /hand/0/delta          [dx, dy, dz]               (Acceleration)
+5️⃣ /hand/0/gesture        [id, conf, name]           (State-ID, Confidence, Name)
+
+# Zweite Hand (wenn erkannt)
+/hand/1/confidence     [palm, gesture, landmark]
+/hand/1/velocity       [vx, vy, vz]
+/hand/1/palm           [x, y, z]
+/hand/1/delta          [dx, dy, dz]
 /hand/1/gesture        [id, conf, name]
 ```
 
-**Rate:** 30 Hz @ 33ms intervals  
-**Latenz:** <60ms Glass-to-OSC  
+**Warum diese Reihenfolge?**
+- **Confidence zuerst:** Client kann Low-Quality-Daten sofort verwerfen (Performance!)
+- **Velocity vor Palm:** Client kann Prediction starten während Palm-Daten ankommen
+- **Delta & Gesture nachher:** Sekundäre Daten, Reihenfolge egal
+
+## 🎯 Performance-Garantie für Clients
+
+**GUARANTEED OSC RATE: 28 Hz (35.7ms fixed interval)**
+
+Der Service garantiert **stabile 28 Hz OSC-Output**, unabhängig von Camera-FPS-Schwankungen:
+
+| Parameter | Wert | Beschreibung |
+|-----------|------|--------------|
+| **OSC Rate** | **28 Hz** | Garantierte Minimum-Rate (frame-paced) |
+| **Interval** | **35.7ms** | Maximales Intervall zwischen OSC-Paketen |
+| **Latency** | <60ms | Glass-to-OSC (95th percentile) |
+| **Jitter** | <2ms | OSC Timing-Varianz (frame-pacing) |
+| **Drop Policy** | >50ms | Alte Pakete werden verworfen |
+
+**Client-Implementierung:**
+```cpp
+// Client kann sich auf diese Werte verlassen:
+const float OSC_RATE = 28.0f;           // Hz (guaranteed minimum)
+const float OSC_INTERVAL = 35.7f;       // ms (max interval)
+const float SMOOTHING_FACTOR = 0.3f;    // Für 28 Hz optimal
+const float PREDICTION_TIME = 35.7f;    // ms (1 frame ahead)
+```
+
+**Warum 28 Hz und nicht 30 Hz?**
+- Camera liefert 28-30 FPS (je nach TensorRT-Last)
+- 28 Hz ist das **garantierte Minimum** unter Last
+- Frame-Pacing im OSC-Sender eliminiert Jitter
+- Client kann Smoothing/Prediction auf **stabile 28 Hz** optimieren
+
 **Non-Blocking:** OSC hat null Einfluss auf Pipeline-FPS
 
 ---

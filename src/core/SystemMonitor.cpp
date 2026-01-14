@@ -34,15 +34,17 @@ SystemPerformance SystemMonitor::getPerformanceStatus() {
     SystemPerformance perf;
 
     // Read nvpmodel status (Power Mode)
+    // Note: On Orin Nano, mode "0" is "15W" (MAXN)
     FILE* pipe = popen("nvpmodel -q 2>/dev/null | head -n1", "r");
     if (pipe) {
         char buffer[256];
         if (fgets(buffer, sizeof(buffer), pipe)) {
             std::string mode(buffer);
-            if (mode.find("0") != std::string::npos || mode.find("MAXN") != std::string::npos) {
-                perf.powerMode = "MAXN";
-            } else if (mode.find("15W") != std::string::npos) {
-                perf.powerMode = "15W";
+            // Mode 0 or "15W" is MAXN on Orin Nano
+            if (mode.find("0") != std::string::npos ||
+                mode.find("MAXN") != std::string::npos ||
+                mode.find("15W") != std::string::npos) {
+                perf.powerMode = "15W MAXN";
             } else if (mode.find("10W") != std::string::npos) {
                 perf.powerMode = "10W";
             } else {
@@ -73,8 +75,10 @@ SystemPerformance SystemMonitor::getPerformanceStatus() {
     perf.temperature = readIntFromFile("/sys/devices/virtual/thermal/thermal_zone0/temp");
     if (perf.temperature > 0) perf.temperature /= 1000;
 
-    // Check if at max performance - just check power mode
-    perf.isMaxPerformance = (perf.powerMode == "MAXN");
+    // Check if at max performance
+    // On Orin Nano: "15W MAXN" is maximum performance mode
+    perf.isMaxPerformance = (perf.powerMode.find("15W") != std::string::npos ||
+                             perf.powerMode.find("MAXN") != std::string::npos);
 
     return perf;
 }
@@ -115,7 +119,7 @@ bool SystemMonitor::ensureMaxPerformance() {
     auto newPerf = getPerformanceStatus();
     Logger::info("After optimization: ", getPerformanceSummary());
 
-    if (newPerf.powerMode != "MAXN") {
+    if (!newPerf.isMaxPerformance) {
         Logger::warn("Could not set MAXN mode. Run manually:");
         Logger::warn("  sudo nvpmodel -m 0 && sudo jetson_clocks");
     }

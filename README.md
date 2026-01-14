@@ -25,7 +25,22 @@ Wichtigste Regeln (Auszug):
 
 Siehe auch `docs/OPTIMAL_WORKFLOW_V3.md` für Details zum Pipeline-Workflow und `docs/COORDINATE_SYSTEM.md` für Koordinaten-Normalisierung.
 
-# Setup Hand-Tracking Service (Jetson Orin Nano)
+---
+
+## 🚀 Scripts Übersicht
+
+| Script | Zweck | Nutzung |
+|--------|-------|---------|
+| `scripts/fix_performance.sh` | 🔧 **WICHTIG**: MAXN Mode aktivieren + TensorRT neu kompilieren | `bash scripts/fix_performance.sh` |
+| `scripts/diagnose_performance.sh` | 📊 System-Status überprüfen (CPU/GPU/Temp/Logs) | `bash scripts/diagnose_performance.sh` |
+| `scripts/check_models.sh` | ✅ Verfügbare Modelle & Status überprüfen | `bash scripts/check_models.sh` |
+| `scripts/convert_to_onnx.py` | 🔄 TFLite → ONNX konvertieren (für neue Modelle) | Nur wenn neue Modelle konvertiert werden müssen |
+| `scripts/update_models.py` | 📥 Modelle von Cloud aktualisieren | `python3 scripts/update_models.py` |
+| `scripts/hand-tracking.service` | 🚀 systemd Service (Auto-Start auf Jetson) | `sudo systemctl start hand-tracking.service` |
+
+---
+
+
 
 Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfiguration für ein C++ Projekt mit **DepthAI v3**, **OpenCV**, **OSC** und **Tailscale** unter Ubuntu 22.04.
 
@@ -58,6 +73,7 @@ Diese Anleitung beschreibt die Installation der Abhängigkeiten und die Konfigur
 
 **Dokumentation:**
 - 🎮 [**OSC_QUICK_REFERENCE.md**](docs/OSC_QUICK_REFERENCE.md) - **← Game Engine Integration & OSC Protokoll**
+- 📊 [**CLIENT_PERFORMANCE_GUIDE.md**](docs/CLIENT_PERFORMANCE_GUIDE.md) - **← Performance-Garantie & Smoothing/Prediction**
 - [TODO.md](docs/TODO.md) - Aktueller Projekt-Status
 - [OPTIMAL_WORKFLOW_V3.md](docs/OPTIMAL_WORKFLOW_V3.md) - V3 Architektur
 - [PLAYER_LOCK_DESIGN.md](docs/PLAYER_LOCK_DESIGN.md) - Phase 4 Player Lock System
